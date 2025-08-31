@@ -1,0 +1,38 @@
+# Web Scraper Environment Configuration Example
+# Copy this file to .env and update with your actual values
+
+# API Keys (comma-separated for multiple keys)
+VALID_API_KEYS=sk-demo-key-12345,sk-your-key-here
+
+# Proxy Configuration (Optional)
+# Enable/disable proxy usage
+PROXY_ENABLED=true
+
+# Multiple Proxy Configuration
+# Format 1: Simple proxy URLs (no authentication)
+PROXY_LIST=http://proxy1.example.com:8080,http://proxy2.example.com:8080
+
+# Format 2: Proxy URLs with individual credentials
+# PROXY_LIST=http://proxy1.example.com:8080:user1:pass1,http://proxy2.example.com:8080:user2:pass2
+
+# Format 3: Mixed (some with credentials, some without)
+# PROXY_LIST=http://proxy1.example.com:8080:user1:pass1,http://proxy2.example.com:8080,http://proxy3.example.com:8080:user3:pass3
+
+# Format 4: Working free proxies (tested and verified)
+# PROXY_LIST=http://66.36.234.130:1339,http://23.237.210.82:80,http://20.13.34.208:8118,http://45.167.126.1:8080,http://52.184.80.192:23128
+
+# Proxy settings
+PROXY_ROTATION_ENABLED=true
+PROXY_MAX_FAILURES=3
+PROXY_TEST_INTERVAL=3600
+
+# Browser settings
+HEADLESS=false
+TIMEOUT=30000
+
+# User agent
+USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+
+# Default scraping settings
+DEFAULT_WAIT_TIME=5000
+MAX_RETRIES=3

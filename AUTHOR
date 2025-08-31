@@ -1,0 +1,34 @@
+Web Scraper API Project
+
+Author: Volkan AYDIN
+Year: 2025
+Contact: volkan@designmonkeys.net
+GitHub: https://github.com/volkandm
+
+This project was developed with passion for web scraping and automation.
+
+Key Contributions:
+- Advanced CSS selector syntax with parent navigation
+- Unified API design for both single and collection scraping
+- Attribute extraction capabilities
+- Playwright integration with proxy support
+- Professional REST API with authentication
+- Comprehensive documentation and examples
+
+Development Timeline:
+- January 2025: Initial development and core features
+- Advanced selector syntax implementation
+- Collection operations with field mapping
+- Debug optimization and performance improvements
+
+Technologies Used:
+- Python 3.8+
+- FastAPI for REST API
+- Playwright for browser automation
+- Pydantic for data validation
+- asyncio for asynchronous operations
+
+Special Thanks:
+This project showcases modern web scraping techniques and serves as an educational resource for developers interested in browser automation and API development.
+
+For commercial licensing inquiries, please contact the author.
