@@ -41,7 +41,7 @@ class WebScraper:
                 self.proxy_list = []
                 return
                 
-            if self.config.PROXY_LIST:
+            if self.config.PROXY_LIST and len(self.config.PROXY_LIST) > 0:
                 self.proxy_list = []
                 for proxy_item in self.config.PROXY_LIST:
                     if proxy_item.strip():  # Skip empty strings
@@ -77,7 +77,7 @@ class WebScraper:
                         self.proxy_list.append(proxy_info)
                 logger.info(f"Loaded {len(self.proxy_list)} proxies from environment")
             else:
-                logger.warning("No proxy list found in environment")
+                logger.info("No proxy list found in environment")
                 self.proxy_list = []
                 
         except Exception as e:

@@ -23,7 +23,7 @@ class Config:
     PROXY_TEST_INTERVAL = int(os.getenv('PROXY_TEST_INTERVAL', '3600'))
     
     # Proxy list from environment (comma-separated)
-    PROXY_LIST = os.getenv('PROXY_LIST', '').split(',') if os.getenv('PROXY_LIST') else []
+    PROXY_LIST = [p.strip() for p in os.getenv('PROXY_LIST', '').split(',') if p.strip()] if os.getenv('PROXY_LIST') else []
     
     # Browser settings
     HEADLESS = os.getenv('HEADLESS', 'false').lower() == 'true'
