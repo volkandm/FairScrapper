@@ -149,16 +149,15 @@ scraper_pool = []
 
 async def get_scraper():
     """Get scraper from pool or create new one"""
-    if not scraper_pool:
-        scraper = WebScraper()
-        await scraper.setup_browser()
-        scraper_pool.append(scraper)
-    return scraper_pool[0]
+    # Always create new scraper for IP rotation
+    scraper = WebScraper()
+    await scraper.setup_browser()
+    return scraper
 
 async def cleanup_scraper(scraper: WebScraper):
     """Cleanup scraper resources"""
     await scraper.close()
-    scraper_pool.remove(scraper)
+    # Don't remove from pool since we're not using pool anymore
 
 @app.on_event("startup")
 async def startup_event():
@@ -207,7 +206,7 @@ def clean_text(text: str) -> str:
     return cleaned.strip()
 
 def parse_selector_and_attr(selector_str: str) -> Tuple[str, Optional[str]]:
-    """Parse selector and attribute from notation like 'a(href)', 'img(src)', '>> a(href)', '* a(href)', '.hasan<div<div>h1'"""
+    """Parse selector and attribute from notation like 'a(href)', 'img(src)', '>> a(href)', '* a(href)', '.child<div<div>h1'"""
     if '(' in selector_str and selector_str.endswith(')'):
         # Find the last opening parenthesis to handle nested selectors
         last_open = selector_str.rfind('(')
@@ -223,7 +222,7 @@ async def extract_single_text(scraper: WebScraper, selector: str) -> str:
     logger.info(f"🔍 extract_single_text called with: {selector}")
     
     # For debugging - return debug info in result
-    if selector == ".hasan<div<div>h1":
+    if selector == ".child<div<div>h1":
         return f"DEBUG: Original selector '{selector}' received"
     
     # Parse selector and attribute
@@ -253,7 +252,7 @@ async def extract_single_text(scraper: WebScraper, selector: str) -> str:
             return clean_text(text)
 
 async def extract_with_parent_navigation(scraper: WebScraper, selector: str) -> str:
-    """Handle parent navigation syntax like '.hasan<div<div>h1'"""
+    """Handle parent navigation syntax like '.child<div<div>h1'"""
     logger.info(f"🔥 PARENT NAVIGATION CALLED: {selector}")
     parts = selector.split('<')
     logger.info(f"🔥 PARTS: {parts}")
@@ -271,10 +270,19 @@ async def extract_with_parent_navigation(scraper: WebScraper, selector: str) -> 
         return clean_text(text)
     
     # Parse the navigation syntax
-    # Format: .hasan<div<div>h1
-    # parts = ['.hasan', 'div', 'div', 'h1']
+    # Format: .child<div<div>h1
+    # parts = ['.child', 'div', 'div', 'h1']
     start_selector = parts[0].strip()
-    remaining_parts = parts[1:]  # ['div', 'div', 'h1']
+    remaining_parts = parts[1:]  # ['div', 'div>h1']
+    
+    # Split the last part if it contains '>'
+    if remaining_parts and '>' in remaining_parts[-1]:
+        last_part = remaining_parts[-1]
+        logger.info(f"🔥 Splitting last part: '{last_part}'")
+        last_parts = last_part.split('>')
+        logger.info(f"🔥 Split result: {last_parts}")
+        remaining_parts = remaining_parts[:-1] + last_parts
+        logger.info(f"🔥 Updated remaining_parts: {remaining_parts}")
     
     # Last part is the target selector
     target_selector = remaining_parts[-1].strip()  # 'h1'
@@ -431,51 +439,63 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                     parentElement = parentElement.parentElement;
                     if (!parentElement) break;
                 }}
-                const fieldElement = parentElement ? parentElement.querySelector("{actual_selector}") : null;
-                result["{field_name}"] = fieldElement ? 
-                    fieldElement.getAttribute("{attr}") || "" : "";
+                const {field_name}_fieldElement = parentElement ? parentElement.querySelector("{actual_selector}") : null;
+                result["{field_name}"] = {field_name}_fieldElement ? 
+                    {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
             ''')
         elif field_selector.startswith("*"):
             # Wildcard navigation: * a(href) means any ancestor's a tag
             actual_selector = field_selector.replace("*", "").strip()
             js_code_parts.append(f'''
-                let fieldElement = null;
+                let {field_name}_fieldElement = null;
                 let currentElement = element;
-                while (currentElement && !fieldElement) {{
-                    fieldElement = currentElement.querySelector("{actual_selector}");
-                    if (!fieldElement) {{
+                while (currentElement && !{field_name}_fieldElement) {{
+                    {field_name}_fieldElement = currentElement.querySelector("{actual_selector}");
+                    if (!{field_name}_fieldElement) {{
                         currentElement = currentElement.parentElement;
                     }}
                 }}
-                result["{field_name}"] = fieldElement ? 
-                    fieldElement.getAttribute("{attr}") || "" : "";
+                result["{field_name}"] = {field_name}_fieldElement ? 
+                    {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
             ''')
         elif field_selector.startswith("parent"):
             # Parent navigation: parent a(href) means parent's a tag
             actual_selector = field_selector.replace("parent", "").strip()
             js_code_parts.append(f'''
                 const parentElement = element.parentElement;
-                const fieldElement = parentElement ? parentElement.querySelector("{actual_selector}") : null;
-                result["{field_name}"] = fieldElement ? 
-                    fieldElement.getAttribute("{attr}") || "" : "";
+                const {field_name}_fieldElement = parentElement ? parentElement.querySelector("{actual_selector}") : null;
+                result["{field_name}"] = {field_name}_fieldElement ? 
+                    {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
             ''')
         elif '<' in field_selector:
-            # Handle parent navigation syntax like '.hasan<div<div>h1'
-            if field_selector.startswith('.hasan<div') and ('div>h1' in field_selector or 'div<div>h1' in field_selector):
-                # Special case for .hasan<div<div>h1 (collection version)
+            # Handle parent navigation syntax like '.child<div<div>h1'
+            parts = field_selector.split('<')
+            if len(parts) >= 2:
+                start_selector = parts[0].strip()
+                remaining_parts = parts[1:]
+                
+                # Split the last part if it contains '>'
+                if remaining_parts and '>' in remaining_parts[-1]:
+                    last_part = remaining_parts[-1]
+                    last_parts = last_part.split('>')
+                    remaining_parts = remaining_parts[:-1] + last_parts
+                
+                target_selector = remaining_parts[-1].strip()
+                parent_levels = len(remaining_parts) - 1
+                
                 js_code_parts.append(f'''
-                    // Find .hasan element relative to current element
-                    const hasanElement = element.querySelector('.hasan');
-                    if (hasanElement) {{
-                        // Go up 2 parent levels from .hasan
-                        let currentElement = hasanElement;
-                        for (let i = 0; i < 2; i++) {{
+                    // Find starting element relative to current element
+                    const startElement = element.querySelector("{start_selector}");
+                    if (startElement) {{
+                        // Go up {parent_levels} parent levels
+                        let currentElement = startElement;
+                        for (let i = 0; i < {parent_levels}; i++) {{
                             currentElement = currentElement.parentElement;
                             if (!currentElement) break;
                         }}
                         
-                        // Find h1 within the container
-                        const targetElement = currentElement ? currentElement.querySelector('h1') : null;
+                        // Find target element within the container
+                        const targetElement = currentElement ? currentElement.querySelector("{target_selector}") : null;
                         result["{field_name}"] = targetElement ? 
                             (targetElement.innerText || targetElement.textContent || "").trim() : "";
                     }} else {{
@@ -483,9 +503,8 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                     }}
                 ''')
             else:
-                # Generic parent navigation handling for other < syntax cases
+                # Fallback for invalid parent navigation syntax
                 js_code_parts.append(f'''
-                    // Generic parent navigation not yet implemented for collections
                     result["{field_name}"] = "";
                 ''')
         elif attr:
@@ -502,17 +521,29 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 ''')
             else:
                 js_code_parts.append(f'''
-                    const fieldElement = element.querySelector("{field_selector}");
-                    result["{field_name}"] = fieldElement ? 
-                        fieldElement.getAttribute("{attr}") || "" : "";
+                    const {field_name}_fieldElement = element.querySelector("{field_selector}");
+                    result["{field_name}"] = {field_name}_fieldElement ? 
+                        {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
                 ''')
         else:
             # Extract text from child element
-            js_code_parts.append(f'''
-                const fieldElement = element.querySelector("{field_selector}");
-                result["{field_name}"] = fieldElement ? 
-                    (fieldElement.innerText || fieldElement.textContent || "").trim() : "";
-            ''')
+            if field_selector == "th":
+                # Special handling for th elements with rowspan
+                js_code_parts.append(f'''
+                    const {field_name}_fieldElement = element.querySelector("{field_selector}");
+                    if ({field_name}_fieldElement) {{
+                        currentCategory = ({field_name}_fieldElement.innerText || {field_name}_fieldElement.textContent || "").trim();
+                        result["{field_name}"] = currentCategory;
+                    }} else {{
+                        result["{field_name}"] = currentCategory;
+                    }}
+                ''')
+            else:
+                js_code_parts.append(f'''
+                    const {field_name}_fieldElement = element.querySelector("{field_selector}");
+                    result["{field_name}"] = {field_name}_fieldElement ? 
+                        ({field_name}_fieldElement.innerText || {field_name}_fieldElement.textContent || "").trim() : "";
+                ''')
     
     js_code = '\n'.join(js_code_parts)
     
@@ -523,12 +554,25 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
         () => {{
             const elements = document.querySelectorAll('{selector}');
             console.log('Found elements:', elements.length);
-            return Array.from(elements).map(element => {{
+            let currentCategory = '';
+            const results = [];
+            
+            for (let i = 0; i < elements.length; i++) {{
+                const element = elements[i];
                 const result = {{}};
+                
+                // Check if this row has a th element (category)
+                const thElement = element.querySelector('th');
+                if (thElement) {{
+                    currentCategory = (thElement.innerText || thElement.textContent || '').trim();
+                }}
+                
                 {js_code}
                 console.log('Result:', result);
-                return result;
-            }});
+                results.push(result);
+            }}
+            
+            return results;
         }}
     """)
     
@@ -543,8 +587,8 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 cleaned_result[key] = clean_text(value)
             else:
                 cleaned_result[key] = value
-        if any(cleaned_result.values()):  # Only add if at least one field has content
-            cleaned_results.append(cleaned_result)
+        # Add all results without filtering
+        cleaned_results.append(cleaned_result)
     
     return cleaned_results
 
@@ -609,7 +653,11 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
             await asyncio.sleep(request.element_timeout)
         
         # Wait for page to load and optional wait_time
-        await scraper.page.wait_for_load_state('networkidle')
+        try:
+            await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
+        except Exception as e:
+            logger.warning(f"⚠️ DOM content loaded timeout: {str(e)}")
+        
         if request.wait_time:
             logger.info(f"⏳ Waiting {request.wait_time} seconds")
             await asyncio.sleep(request.wait_time)
@@ -644,32 +692,7 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
                         
                         # Handle parent navigation syntax with <
                         if '<' in selector:
-                            # Special case for .hasan<div<div>h1 (may get parsed as div>h1 due to shell)
-                            if selector.startswith('.hasan<div') and ('div>h1' in selector or 'div<div>h1' in selector):
-                                # Direct implementation for the specific case
-                                value = await scraper.page.evaluate("""
-                                    () => {
-                                        // Find .hasan element
-                                        const startElement = document.querySelector('.hasan');
-                                        if (!startElement) return '';
-                                        
-                                        // Go up 2 parent levels: .hasan -> div.txt.basan -> div.container
-                                        let currentElement = startElement;
-                                        for (let i = 0; i < 2; i++) {
-                                            currentElement = currentElement.parentElement;
-                                            if (!currentElement) return '';
-                                        }
-                                        
-                                        // Find h1 within the container
-                                        const targetElement = currentElement.querySelector('h1');
-                                        if (!targetElement) return '';
-                                        
-                                        return targetElement.innerText || targetElement.textContent || '';
-                                    }
-                                """) or ""
-                                value = clean_text(value)
-                            else:
-                                value = await extract_with_parent_navigation(scraper, selector)
+                            value = await extract_with_parent_navigation(scraper, selector)
                         else:
                             value = await extract_single_text(scraper, selector)
                     else:
@@ -984,182 +1007,8 @@ async def extract_collection_text(scraper: WebScraper, selector: str) -> list:
         logger.error(f"❌ Collection text extraction failed: {str(e)}")
         return []
 
-async def extract_collection_with_fields(scraper: WebScraper, selector: str, field_configs: dict) -> list:
-    """Extract collection with multiple fields per item"""
-    try:
-        # Build JavaScript code for extraction
-        js_code_parts = []
-        for field_name, config in field_configs.items():
-            # Handle different field configurations
-            if isinstance(config, str):
-                field_selector = config
-                attr = None
-            else:
-                field_selector = config.get("selector", "")
-                attr = config.get("attr")
-            
-            # Parse attribute from selector notation like "(class)" or "selector(class)"
-            if field_selector.startswith("(") and field_selector.endswith(")"):
-                # Format: "(class)" - get attribute from current element
-                attr = field_selector[1:-1]
-                field_selector = ""
-            elif "(" in field_selector and field_selector.endswith(")"):
-                # Format: "selector(class)" - get attribute from child element
-                last_open = field_selector.rfind('(')
-                attr = field_selector[last_open+1:field_selector.find(')', last_open)]
-                field_selector = field_selector[:last_open].strip()
-            
-            if field_selector == "text":
-                # Special case: get text from current element
-                js_code_parts.append(f'''
-                    result["{field_name}"] = (element.innerText || element.textContent || "").trim();
-                ''')
-            elif field_selector.startswith(">>"):
-                # Parent navigation: >> selector
-                actual_selector = field_selector.replace(">>", "").strip()
-                if attr:
-                    js_code_parts.append(f'''
-                        const grandParent = element.parentElement ? element.parentElement.parentElement : null;
-                        const fieldElement = grandParent ? grandParent.querySelector("{actual_selector}") : null;
-                        result["{field_name}"] = fieldElement ? 
-                            fieldElement.getAttribute("{attr}") || "" : "";
-                    ''')
-                else:
-                    js_code_parts.append(f'''
-                        const grandParent = element.parentElement ? element.parentElement.parentElement : null;
-                        const fieldElement = grandParent ? grandParent.querySelector("{actual_selector}") : null;
-                        result["{field_name}"] = fieldElement ? 
-                            (fieldElement.innerText || fieldElement.textContent || "").trim() : "";
-                    ''')
-            elif field_selector.startswith("*"):
-                # Wildcard parent navigation: * selector
-                actual_selector = field_selector.replace("*", "").strip()
-                if attr:
-                    js_code_parts.append(f'''
-                        let ancestor = element.parentElement;
-                        let fieldElement = null;
-                        while (ancestor && !fieldElement) {{
-                            fieldElement = ancestor.querySelector("{actual_selector}");
-                            ancestor = ancestor.parentElement;
-                        }}
-                        result["{field_name}"] = fieldElement ? 
-                            fieldElement.getAttribute("{attr}") || "" : "";
-                    ''')
-                else:
-                    js_code_parts.append(f'''
-                        let ancestor = element.parentElement;
-                        let fieldElement = null;
-                        while (ancestor && !fieldElement) {{
-                            fieldElement = ancestor.querySelector("{actual_selector}");
-                            ancestor = ancestor.parentElement;
-                        }}
-                        result["{field_name}"] = fieldElement ? 
-                            (fieldElement.innerText || fieldElement.textContent || "").trim() : "";
-                    ''')
-            elif field_selector.startswith("parent"):
-                # Direct parent navigation: parent selector
-                actual_selector = field_selector.replace("parent", "").strip()
-                if attr:
-                    js_code_parts.append(f'''
-                        const parentElement = element.parentElement;
-                        const fieldElement = parentElement ? parentElement.querySelector("{actual_selector}") : null;
-                        result["{field_name}"] = fieldElement ? 
-                            fieldElement.getAttribute("{attr}") || "" : "";
-                    ''')
-                else:
-                    js_code_parts.append(f'''
-                        const parentElement = element.parentElement;
-                        const fieldElement = parentElement ? parentElement.querySelector("{actual_selector}") : null;
-                        result["{field_name}"] = fieldElement ? 
-                            (fieldElement.innerText || fieldElement.textContent || "").trim() : "";
-                    ''')
-            elif '<' in field_selector:
-                # Parent navigation with < syntax: .hasan<div<div>h1
-                if field_selector.startswith('.hasan<div') and ('div>h1' in field_selector or 'div<div>h1' in field_selector):
-                    # Special case for .hasan<div<div>h1
-                    if attr:
-                        js_code_parts.append(f'''
-                            const hasanElement = element.querySelector('.hasan');
-                            if (hasanElement) {{
-                                let currentElement = hasanElement;
-                                for (let i = 0; i < 2; i++) {{
-                                    currentElement = currentElement.parentElement;
-                                    if (!currentElement) break;
-                                }}
-                                const targetElement = currentElement ? currentElement.querySelector('h1') : null;
-                                result["{field_name}"] = targetElement ? 
-                                    targetElement.getAttribute("{attr}") || "" : "";
-                            }} else {{
-                                result["{field_name}"] = "";
-                            }}
-                        ''')
-                    else:
-                        js_code_parts.append(f'''
-                            const hasanElement = element.querySelector('.hasan');
-                            if (hasanElement) {{
-                                let currentElement = hasanElement;
-                                for (let i = 0; i < 2; i++) {{
-                                    currentElement = currentElement.parentElement;
-                                    if (!currentElement) break;
-                                }}
-                                const targetElement = currentElement ? currentElement.querySelector('h1') : null;
-                                result["{field_name}"] = targetElement ? 
-                                    (targetElement.innerText || targetElement.textContent || "").trim() : "";
-                            }} else {{
-                                result["{field_name}"] = "";
-                            }}
-                        ''')
-                else:
-                    # Generic parent navigation handling for other < syntax cases
-                    js_code_parts.append(f'''
-                        result["{field_name}"] = "";
-                    ''')
-            elif attr:
-                # Attribute extraction from child element
-                if field_selector:
-                    js_code_parts.append(f'''
-                        const fieldElement = element.querySelector("{field_selector}");
-                        result["{field_name}"] = fieldElement ? 
-                            fieldElement.getAttribute("{attr}") || "" : "";
-                    ''')
-                else:
-                    # Attribute from current element
-                    js_code_parts.append(f'''
-                        result["{field_name}"] = element.getAttribute("{attr}") || "";
-                    ''')
-            else:
-                # Normal child element text extraction
-                if field_selector:
-                    js_code_parts.append(f'''
-                        const fieldElement = element.querySelector("{field_selector}");
-                        result["{field_name}"] = fieldElement ? 
-                            (fieldElement.innerText || fieldElement.textContent || "").trim() : "";
-                    ''')
-                else:
-                    js_code_parts.append(f'''
-                        result["{field_name}"] = (element.innerText || element.textContent || "").trim();
-                    ''')
-        
-        js_code = "\n".join(js_code_parts)
-        
-        # Execute JavaScript to extract collection data
-        items = await scraper.page.evaluate(f"""
-            () => {{
-                const elements = document.querySelectorAll('{selector}');
-                return Array.from(elements).map(element => {{
-                    const result = {{}};
-                    {js_code}
-                    return result;
-                }});
-            }}
-        """)
-        
-        return items or []
-        
-    except Exception as e:
-        logger.error(f"❌ Collection with fields extraction failed: {str(e)}")
-        return []
+# Duplicate function removed - using the first one above
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8888) 
+    uvicorn.run(app, host="127.0.0.1", port=8888) 

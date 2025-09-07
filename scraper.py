@@ -181,7 +181,7 @@ class WebScraper:
         """Navigate to a specific URL"""
         try:
             logger.info(f"Navigating to: {url}")
-            await self.page.goto(url, wait_until='networkidle')
+            await self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
             logger.info("Page loaded successfully")
             
             # Wait for JavaScript to load
