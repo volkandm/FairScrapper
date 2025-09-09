@@ -217,6 +217,175 @@ def parse_selector_and_attr(selector_str: str) -> Tuple[str, Optional[str]]:
         # No attribute specified, return selector as is
         return selector_str.strip(), None
 
+def parse_query_builder_selector(selector: str) -> Tuple[List[str], List[str]]:
+    """
+    Parse query builder selector into selections and operators
+    
+    Example: "a.test<.product_pod<section>div.alert>strong"
+    Returns: 
+        selections: ["a.test", ".product_pod", "section", "div.alert", "strong"]
+        operators: ["<", "<", ">", ">"]
+    """
+    import re
+    
+    # Split by operators <, >, + and spaces
+    # Use regex to split while keeping the operators
+    parts = re.split(r'([<>+\s]+)', selector)
+    
+    # Filter out empty strings and clean up
+    parts = [part.strip() for part in parts if part.strip()]
+    
+    selections = []
+    operators = []
+    
+    for i, part in enumerate(parts):
+        if part in ['<', '>', '+']:
+            operators.append(part)
+        elif part not in [' ', '\t', '\n']:
+            selections.append(part)
+    
+    logger.info(f"🔧 Query Builder Parse: selections={selections}, operators={operators}")
+    return selections, operators
+
+async def execute_query_builder(scraper: WebScraper, selections: List[str], operators: List[str], 
+                               operation_type: str = "single", attr: Optional[str] = None) -> Union[str, List[str]]:
+    """
+    Execute query builder algorithm
+    
+    Algorithm:
+    1. Start with first selection: document.querySelector(selections[0])
+    2. For each operator:
+       - If '<': use closest(selections[i+1])
+       - If '>': use querySelector(selections[i+1])
+       - If '+': use nextElementSibling then querySelector(selections[i+1])
+    3. Return final result
+    """
+    if not selections:
+        return "" if operation_type == "single" else []
+    
+    # Build JavaScript code for query builder
+    js_steps = []
+    
+    # Start with first selection
+    js_steps.append(f"let currentElement = document.querySelector('{selections[0]}');")
+    js_steps.append("console.log('Initial element:', currentElement);")
+    js_steps.append("if (!currentElement) return null;")
+    
+    # Process each operator and next selection
+    for i, operator in enumerate(operators):
+        if i + 1 >= len(selections):
+            break
+            
+        next_selection = selections[i + 1]
+        
+        if operator == '<':
+            # Parent navigation: closest()
+            js_steps.append(f"currentElement = currentElement.closest('{next_selection}');")
+            js_steps.append(f"console.log('After closest({next_selection}):', currentElement);")
+        elif operator == '>':
+            # Child navigation: querySelector()
+            js_steps.append(f"currentElement = currentElement.querySelector('{next_selection}');")
+            js_steps.append(f"console.log('After querySelector({next_selection}):', currentElement);")
+        elif operator == '+':
+            # Sibling navigation: nextElementSibling then querySelector()
+            js_steps.append("currentElement = currentElement.nextElementSibling;")
+            js_steps.append("console.log('After nextElementSibling:', currentElement);")
+            js_steps.append(f"if (currentElement) currentElement = currentElement.querySelector('{next_selection}');")
+            js_steps.append(f"console.log('After sibling querySelector({next_selection}):', currentElement);")
+        
+        js_steps.append("if (!currentElement) return null;")
+    
+    # Final result extraction
+    if operation_type == "single":
+        if attr:
+            js_steps.append(f"return currentElement ? currentElement.getAttribute('{attr}') || '' : '';")
+        else:
+            js_steps.append("return currentElement ? (currentElement.innerText || currentElement.textContent || '') : '';")
+    else:
+        # For collections, we need to handle multiple elements
+        if attr:
+            js_steps.append("return currentElement ? [currentElement.getAttribute('" + attr + "') || ''] : [];")
+        else:
+            js_steps.append("return currentElement ? [currentElement.innerText || currentElement.textContent || ''] : [];")
+    
+    js_code = '\n'.join(js_steps)
+    logger.info(f"🔧 Query Builder JavaScript: {js_code}")
+    
+    # Execute JavaScript
+    result = await scraper.page.evaluate(f"""
+        () => {{
+            {js_code}
+        }}
+    """)
+    
+    if operation_type == "single":
+        return clean_text(result) if result else ""
+    else:
+        return [clean_text(item) for item in result] if result else []
+
+async def unified_parser(scraper: WebScraper, selector: str, operation_type: str = "single", 
+                        attr: Optional[str] = None, fields: Optional[Dict[str, Union[str, FieldSelector]]] = None,
+                        include_html: bool = False) -> Union[str, List[str], List[Dict[str, Any]], Dict[str, str]]:
+    """
+    Unified parser function that handles all types of element extraction
+    
+    Args:
+        scraper: WebScraper instance
+        selector: CSS selector string
+        operation_type: "single" for single element, "collection" for multiple elements
+        attr: Attribute name to extract (e.g., "href", "src")
+        fields: Dictionary of field configurations for collection extraction
+        include_html: Whether to include HTML content along with text
+    
+    Returns:
+        Extracted data based on operation type and parameters
+    """
+    logger.info(f"🔍 Unified parser called: selector='{selector}', type='{operation_type}', attr='{attr}'")
+    
+    # Parse selector and attribute if not explicitly provided
+    if not attr and '(' in selector and selector.endswith(')'):
+        parsed_selector, attr = parse_selector_and_attr(selector)
+    else:
+        parsed_selector = selector
+    
+    # Handle query builder syntax (<, >, + operators)
+    if any(op in parsed_selector for op in ['<', '>', '+']):
+        logger.info("🔧 Query builder syntax detected")
+        selections, operators = parse_query_builder_selector(parsed_selector)
+        return await execute_query_builder(scraper, selections, operators, operation_type, attr)
+    
+    # Single element extraction
+    if operation_type == "single":
+        if attr:
+            # Extract attribute
+            return await extract_single_attribute(scraper, parsed_selector, attr)
+        elif include_html:
+            # Extract both text and HTML
+            return await extract_single_text_and_html(scraper, parsed_selector)
+        else:
+            # Extract text only
+            return await extract_single_text(scraper, parsed_selector)
+    
+    # Collection extraction
+    elif operation_type == "collection":
+        if fields:
+            # Extract with multiple fields
+            return await extract_collection_with_fields(scraper, parsed_selector, fields)
+        elif attr:
+            # Extract attributes from multiple elements
+            return await extract_collection_attributes(scraper, parsed_selector, attr)
+        elif include_html:
+            # Extract both text and HTML from multiple elements
+            return await extract_collection_text_and_html(scraper, parsed_selector)
+        else:
+            # Extract text from multiple elements
+            return await extract_collection_text(scraper, parsed_selector)
+    
+    else:
+        raise ValueError(f"Invalid operation_type: {operation_type}")
+
+
+
 async def extract_single_text(scraper: WebScraper, selector: str) -> str:
     """Extract text from single element"""
     logger.info(f"🔍 extract_single_text called with: {selector}")
@@ -234,10 +403,11 @@ async def extract_single_text(scraper: WebScraper, selector: str) -> str:
         logger.info("🔍 Extracting attribute")
         return await extract_single_attribute(scraper, parsed_selector, attr)
     else:
-        # Check if this is a parent navigation syntax with <
-        if '<' in parsed_selector:
-            logger.info("🔍 Found < in selector, calling parent navigation")
-            return await extract_with_parent_navigation(scraper, parsed_selector)
+        # Check if this is a query builder syntax with <, >, +
+        if any(op in parsed_selector for op in ['<', '>', '+']):
+            logger.info("🔧 Found query builder syntax, using query builder")
+            selections, operators = parse_query_builder_selector(parsed_selector)
+            return await execute_query_builder(scraper, selections, operators, "single", attr)
         else:
             logger.info("🔍 Normal selector extraction")
             # Extract text content
@@ -251,67 +421,7 @@ async def extract_single_text(scraper: WebScraper, selector: str) -> str:
             # Clean up whitespace in Python
             return clean_text(text)
 
-async def extract_with_parent_navigation(scraper: WebScraper, selector: str) -> str:
-    """Handle parent navigation syntax like '.child<div<div>h1'"""
-    logger.info(f"🔥 PARENT NAVIGATION CALLED: {selector}")
-    parts = selector.split('<')
-    logger.info(f"🔥 PARTS: {parts}")
-    
-    if len(parts) < 2:
-        # Fallback to normal selector if no parent navigation
-        logger.info("🔥 NO PARENT NAVIGATION, FALLBACK")
-        text = await scraper.page.evaluate(f"""
-            () => {{
-                const element = document.querySelector('{selector}');
-                if (!element) return '';
-                return element.innerText || element.textContent || '';
-            }}
-        """) or ""
-        return clean_text(text)
-    
-    # Parse the navigation syntax
-    # Format: .child<div<div>h1
-    # parts = ['.child', 'div', 'div', 'h1']
-    start_selector = parts[0].strip()
-    remaining_parts = parts[1:]  # ['div', 'div>h1']
-    
-    # Split the last part if it contains '>'
-    if remaining_parts and '>' in remaining_parts[-1]:
-        last_part = remaining_parts[-1]
-        logger.info(f"🔥 Splitting last part: '{last_part}'")
-        last_parts = last_part.split('>')
-        logger.info(f"🔥 Split result: {last_parts}")
-        remaining_parts = remaining_parts[:-1] + last_parts
-        logger.info(f"🔥 Updated remaining_parts: {remaining_parts}")
-    
-    # Last part is the target selector
-    target_selector = remaining_parts[-1].strip()  # 'h1'
-    # Number of parent levels to go up (exclude the target)
-    parent_levels = len(remaining_parts) - 1  # 2
-    
-    # Build JavaScript for parent navigation
-    text = await scraper.page.evaluate(f"""
-        () => {{
-            // Find the starting element
-            const startElement = document.querySelector('{start_selector}');
-            if (!startElement) return '';
-            
-            // Navigate up through parents
-            let currentElement = startElement;
-            for (let i = 0; i < {parent_levels}; i++) {{
-                currentElement = currentElement.parentElement;
-                if (!currentElement) return '';
-            }}
-            
-            // Find target element within current element
-            const targetElement = currentElement.querySelector('{target_selector}');
-            if (!targetElement) return '';
-            
-            return targetElement.innerText || targetElement.textContent || '';
-        }}
-    """) or ""
-    
-    return clean_text(text)
+
 
 async def extract_single_html(scraper: WebScraper, selector: str) -> str:
     """Extract HTML content from single element"""
@@ -429,20 +539,6 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
             js_code_parts.append(f'''
                 result["{field_name}"] = (element.innerText || element.textContent || "").trim();
             ''')
-        elif field_selector.startswith(">>"):
-            # Parent navigation: >> a(href) means parent's parent's a tag
-            parent_levels = field_selector.count(">>")
-            actual_selector = field_selector.replace(">>", "").strip()
-            js_code_parts.append(f'''
-                let parentElement = element;
-                for (let i = 0; i < {parent_levels}; i++) {{
-                    parentElement = parentElement.parentElement;
-                    if (!parentElement) break;
-                }}
-                const {field_name}_fieldElement = parentElement ? parentElement.querySelector("{actual_selector}") : null;
-                result["{field_name}"] = {field_name}_fieldElement ? 
-                    {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
-            ''')
         elif field_selector.startswith("*"):
             # Wildcard navigation: * a(href) means any ancestor's a tag
             actual_selector = field_selector.replace("*", "").strip()
@@ -455,15 +551,6 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                         currentElement = currentElement.parentElement;
                     }}
                 }}
-                result["{field_name}"] = {field_name}_fieldElement ? 
-                    {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
-            ''')
-        elif field_selector.startswith("parent"):
-            # Parent navigation: parent a(href) means parent's a tag
-            actual_selector = field_selector.replace("parent", "").strip()
-            js_code_parts.append(f'''
-                const parentElement = element.parentElement;
-                const {field_name}_fieldElement = parentElement ? parentElement.querySelector("{actual_selector}") : null;
                 result["{field_name}"] = {field_name}_fieldElement ? 
                     {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
             ''')
@@ -689,23 +776,12 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
                     if isinstance(config, str):
                         # String format: "selector" or "selector(attr)"
                         selector = config
-                        
-                        # Handle parent navigation syntax with <
-                        if '<' in selector:
-                            value = await extract_with_parent_navigation(scraper, selector)
-                        else:
-                            value = await extract_single_text(scraper, selector)
+                        value = await unified_parser(scraper, selector, operation_type="single")
                     else:
                         # Dict format: {"selector": "...", "attr": "..."}
                         selector = config["selector"]
                         attr = config.get("attr")
-                        
-                        if attr:
-                            # Extract attribute
-                            value = await extract_single_attribute(scraper, selector, attr)
-                        else:
-                            # Extract text
-                            value = await extract_single_text(scraper, selector)
+                        value = await unified_parser(scraper, selector, operation_type="single", attr=attr)
                     
                     response_data["get"][key] = value
                     logger.info(f"✅ Extracted '{key}': {len(str(value))} chars")
@@ -722,12 +798,8 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
                     selector = config["selector"]
                     fields = config.get("fields", {})
                     
-                    if fields:
-                        # Extract with fields
-                        items = await extract_collection_with_fields(scraper, selector, fields)
-                    else:
-                        # Extract simple text collection
-                        items = await extract_collection_text(scraper, selector)
+                    # Use unified parser for collection extraction
+                    items = await unified_parser(scraper, selector, operation_type="collection", fields=fields)
                     
                     response_data["collect"][key] = items
                     logger.info(f"✅ Extracted '{key}': {len(items)} items")
@@ -991,23 +1063,7 @@ async def test_proxy(
             "error": str(e)
         }
 
-async def extract_collection_text(scraper: WebScraper, selector: str) -> list:
-    """Extract text from multiple elements using simple selector"""
-    try:
-        elements = await scraper.page.evaluate(f"""
-            () => {{
-                const elements = document.querySelectorAll('{selector}');
-                return Array.from(elements).map(el => 
-                    (el.innerText || el.textContent || '').trim()
-                );
-            }}
-        """)
-        return [clean_text(text) for text in elements if text]
-    except Exception as e:
-        logger.error(f"❌ Collection text extraction failed: {str(e)}")
-        return []
-
-# Duplicate function removed - using the first one above
+# Duplicate function removed - using unified_parser instead
 
 if __name__ == "__main__":
     import uvicorn
