@@ -266,47 +266,84 @@ async def execute_query_builder(scraper: WebScraper, selections: List[str], oper
     # Build JavaScript code for query builder
     js_steps = []
     
-    # Start with first selection
-    js_steps.append(f"let currentElement = document.querySelector('{selections[0]}');")
-    js_steps.append("console.log('Initial element:', currentElement);")
-    js_steps.append("if (!currentElement) return null;")
-    
-    # Process each operator and next selection
-    for i, operator in enumerate(operators):
-        if i + 1 >= len(selections):
-            break
-            
-        next_selection = selections[i + 1]
-        
-        if operator == '<':
-            # Parent navigation: closest()
-            js_steps.append(f"currentElement = currentElement.closest('{next_selection}');")
-            js_steps.append(f"console.log('After closest({next_selection}):', currentElement);")
-        elif operator == '>':
-            # Child navigation: querySelector()
-            js_steps.append(f"currentElement = currentElement.querySelector('{next_selection}');")
-            js_steps.append(f"console.log('After querySelector({next_selection}):', currentElement);")
-        elif operator == '+':
-            # Sibling navigation: nextElementSibling then querySelector()
-            js_steps.append("currentElement = currentElement.nextElementSibling;")
-            js_steps.append("console.log('After nextElementSibling:', currentElement);")
-            js_steps.append(f"if (currentElement) currentElement = currentElement.querySelector('{next_selection}');")
-            js_steps.append(f"console.log('After sibling querySelector({next_selection}):', currentElement);")
-        
-        js_steps.append("if (!currentElement) return null;")
-    
-    # Final result extraction
     if operation_type == "single":
+        # Single element extraction
+        js_steps.append(f"let currentElement = document.querySelector('{selections[0]}');")
+        js_steps.append("console.log('Initial element:', currentElement);")
+        js_steps.append("if (!currentElement) return null;")
+        
+        # Process each operator and next selection
+        for i, operator in enumerate(operators):
+            if i + 1 >= len(selections):
+                break
+                
+            next_selection = selections[i + 1]
+            
+            if operator == '<':
+                # Parent navigation: closest()
+                js_steps.append(f"currentElement = currentElement.closest('{next_selection}');")
+                js_steps.append(f"console.log('After closest({next_selection}):', currentElement);")
+            elif operator == '>':
+                # Child navigation: querySelector()
+                js_steps.append(f"currentElement = currentElement.querySelector('{next_selection}');")
+                js_steps.append(f"console.log('After querySelector({next_selection}):', currentElement);")
+            elif operator == '+':
+                # Sibling navigation: nextElementSibling then querySelector()
+                js_steps.append("currentElement = currentElement.nextElementSibling;")
+                js_steps.append("console.log('After nextElementSibling:', currentElement);")
+                js_steps.append(f"if (currentElement) currentElement = currentElement.querySelector('{next_selection}');")
+                js_steps.append(f"console.log('After sibling querySelector({next_selection}):', currentElement);")
+            
+            js_steps.append("if (!currentElement) return null;")
+        
+        # Final result extraction for single element
         if attr:
             js_steps.append(f"return currentElement ? currentElement.getAttribute('{attr}') || '' : '';")
         else:
             js_steps.append("return currentElement ? (currentElement.innerText || currentElement.textContent || '') : '';")
+    
     else:
-        # For collections, we need to handle multiple elements
+        # Collection extraction
+        js_steps.append(f"const elements = document.querySelectorAll('{selections[0]}');")
+        js_steps.append("console.log('Found elements:', elements.length);")
+        js_steps.append("const results = [];")
+        js_steps.append("for (let i = 0; i < elements.length; i++) {")
+        js_steps.append("    let currentElement = elements[i];")
+        js_steps.append("    console.log('Processing element:', i, currentElement);")
+        
+        # Process each operator and next selection for each element
+        for i, operator in enumerate(operators):
+            if i + 1 >= len(selections):
+                break
+                
+            next_selection = selections[i + 1]
+            
+            if operator == '<':
+                # Parent navigation: closest()
+                js_steps.append(f"    currentElement = currentElement.closest('{next_selection}');")
+                js_steps.append(f"    console.log('After closest({next_selection}):', currentElement);")
+            elif operator == '>':
+                # Child navigation: querySelector()
+                js_steps.append(f"    currentElement = currentElement.querySelector('{next_selection}');")
+                js_steps.append(f"    console.log('After querySelector({next_selection}):', currentElement);")
+            elif operator == '+':
+                # Sibling navigation: nextElementSibling then querySelector()
+                js_steps.append("    currentElement = currentElement.nextElementSibling;")
+                js_steps.append("    console.log('After nextElementSibling:', currentElement);")
+                js_steps.append(f"    if (currentElement) currentElement = currentElement.querySelector('{next_selection}');")
+                js_steps.append(f"    console.log('After sibling querySelector({next_selection}):', currentElement);")
+            
+            js_steps.append("    if (!currentElement) break;")
+        
+        # Final result extraction for collection
         if attr:
-            js_steps.append("return currentElement ? [currentElement.getAttribute('" + attr + "') || ''] : [];")
+            js_steps.append(f"    const result = currentElement ? currentElement.getAttribute('{attr}') || '' : '';")
         else:
-            js_steps.append("return currentElement ? [currentElement.innerText || currentElement.textContent || ''] : [];")
+            js_steps.append("    const result = currentElement ? (currentElement.innerText || currentElement.textContent || '') : '';")
+        
+        js_steps.append("    results.push(result);")
+        js_steps.append("}")
+        js_steps.append("return results;")
     
     js_code = '\n'.join(js_steps)
     logger.info(f"🔧 Query Builder JavaScript: {js_code}")
