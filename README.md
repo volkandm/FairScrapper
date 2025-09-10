@@ -2,9 +2,9 @@
 
 A powerful and ethical web scraping API built with FastAPI and Playwright, featuring proxy rotation and comprehensive error handling.
 
-## 🎯 FairScrapper - Adil Web Scraping Platformu
+## 🎯 FairScrapper - Fair Web Scraping Platform
 
-FairScrapper, proxy rotasyonu ve etik scraping pratikleri ile sürdürülebilir web scraping çözümü sunar.
+FairScrapper provides a sustainable web scraping solution with proxy rotation and ethical scraping practices.
 
 ## Table of Contents
 

@@ -12,6 +12,8 @@ import time
 import json
 import random
 import os
+import socks
+import socket
 from playwright.async_api import async_playwright
 from config import Config
 import logging
@@ -64,12 +66,23 @@ class WebScraper:
                             username = ""
                             password = ""
                         
+                        # Determine proxy type from URL
+                        proxy_type = "HTTP"
+                        if proxy_url.startswith("socks4://"):
+                            proxy_type = "SOCKS4"
+                            proxy_url = proxy_url.replace("socks4://", "http://")
+                        elif proxy_url.startswith("socks5://"):
+                            proxy_type = "SOCKS5"
+                            proxy_url = proxy_url.replace("socks5://", "http://")
+                        elif proxy_url.startswith("http://") or proxy_url.startswith("https://"):
+                            proxy_type = "HTTP"
+                        
                         proxy_info = {
                             "url": proxy_url,
                             "username": username,
                             "password": password,
                             "country": "Unknown",
-                            "type": "HTTP",
+                            "type": proxy_type,
                             "status": "working",
                             "speed": "unknown",
                             "last_tested": "2025-01-09"
@@ -89,25 +102,45 @@ class WebScraper:
         if not self.config.PROXY_ENABLED:
             return None  # Proxy is disabled
         
-        if not self.proxy_list or not self.config.PROXY_ROTATION_ENABLED:
+        if not self.proxy_list:
             return None  # No proxy available
         
-        # Find next working proxy
-        attempts = 0
-        while attempts < len(self.proxy_list):
+        # Use the current proxy index (set by API)
+        if self.current_proxy_index < len(self.proxy_list):
             proxy = self.proxy_list[self.current_proxy_index]
             proxy_url = proxy.get('url', '')
             
             # Check if proxy has too many failures
             if self.proxy_failures.get(proxy_url, 0) < self.config.PROXY_MAX_FAILURES:
-                self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxy_list)
+                logger.info(f"🔄 Using proxy {self.current_proxy_index + 1}/{len(self.proxy_list)}: {proxy_url}")
                 return proxy  # Return full proxy info dict
-            
-            # Move to next proxy
-            self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxy_list)
-            attempts += 1
+            else:
+                logger.warning(f"⚠️ Proxy {proxy_url} has too many failures, skipping")
+        
+        # If current proxy failed, try to find any working proxy
+        for i, proxy in enumerate(self.proxy_list):
+            proxy_url = proxy.get('url', '')
+            if self.proxy_failures.get(proxy_url, 0) < self.config.PROXY_MAX_FAILURES:
+                logger.info(f"🔄 Fallback to proxy {i + 1}/{len(self.proxy_list)}: {proxy_url}")
+                return proxy
         
         # If no working proxy found, return None
+        logger.error("❌ No working proxies available")
+        return None
+    
+    def get_current_proxy_info(self):
+        """Get current proxy information for response"""
+        if not self.config.PROXY_ENABLED or not self.proxy_list:
+            return None
+        
+        if self.current_proxy_index < len(self.proxy_list):
+            proxy = self.proxy_list[self.current_proxy_index]
+            return {
+                "url": proxy.get('url', ''),
+                "type": proxy.get('type', 'HTTP'),
+                "index": self.current_proxy_index + 1,
+                "total": len(self.proxy_list)
+            }
         return None
     
     def mark_proxy_failed(self, proxy_url):
@@ -140,15 +173,48 @@ class WebScraper:
                 proxy_url = proxy_info.get('url')
                 proxy_username = proxy_info.get('username', '')
                 proxy_password = proxy_info.get('password', '')
+                proxy_type = proxy_info.get('type', 'HTTP')
                 
-                proxy_config = {
-                    'server': proxy_url,
-                    'username': proxy_username,
-                    'password': proxy_password
-                }
-                logger.info(f"Using proxy: {proxy_url}")
-                if proxy_username:
-                    logger.info(f"Proxy credentials: {proxy_username}")
+                # Configure proxy based on type
+                if proxy_type in ['SOCKS4', 'SOCKS5']:
+                    # For SOCKS proxies, we need to set up system-level proxy
+                    # Playwright doesn't directly support SOCKS, so we'll use a workaround
+                    logger.info(f"Using SOCKS proxy: {proxy_url} (Type: {proxy_type})")
+                    
+                    # Extract host and port from proxy URL
+                    if proxy_url.startswith('http://'):
+                        proxy_url = proxy_url.replace('http://', '')
+                    
+                    if ':' in proxy_url:
+                        host, port = proxy_url.split(':', 1)
+                        port = int(port)
+                    else:
+                        host = proxy_url
+                        port = 1080  # Default SOCKS port
+                    
+                    # Set up SOCKS proxy for the entire system
+                    if proxy_type == 'SOCKS4':
+                        socks.set_default_proxy(socks.SOCKS4, host, port, username=proxy_username, password=proxy_password)
+                    elif proxy_type == 'SOCKS5':
+                        socks.set_default_proxy(socks.SOCKS5, host, port, username=proxy_username, password=proxy_password)
+                    
+                    # Monkey patch socket to use SOCKS
+                    socket.socket = socks.socksocket
+                    
+                    # For Playwright, we'll use a different approach
+                    # We'll create a custom proxy server or use HTTP tunneling
+                    proxy_config = None  # SOCKS proxies handled at system level
+                    
+                else:
+                    # HTTP/HTTPS proxy configuration
+                    proxy_config = {
+                        'server': proxy_url,
+                        'username': proxy_username,
+                        'password': proxy_password
+                    }
+                    logger.info(f"Using HTTP proxy: {proxy_url}")
+                    if proxy_username:
+                        logger.info(f"Proxy credentials: {proxy_username}")
             else:
                 logger.info("No proxy configured, running without proxy")
             

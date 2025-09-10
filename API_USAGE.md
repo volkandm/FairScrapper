@@ -1,35 +1,35 @@
-# 🌐 Web Scraper API Kullanım Kılavuzu
+# 🌐 Web Scraper API Usage Guide
 
-Bu kılavuz, REST API ile web scraping yapmayı açıklar.
+This guide explains how to perform web scraping using the REST API.
 
 ## 🔐 Authentication
 
-API, `X-API-Key` header'ı ile authentication gerektirir.
+The API requires authentication using the `X-API-Key` header.
 
-### Geçerli API Key'ler:
+### Valid API Keys:
 - `sk-1234567890abcdef`
 - `sk-abcdef1234567890`
 - `sk-test-api-key-2024`
 - `sk-prod-api-key-2024`
 
-## 🚀 API Başlatma
+## 🚀 Starting the API
 
 ```bash
-# API'yi başlat
+# Start the API
 python api.py
 
-# Veya uvicorn ile
+# Or with uvicorn
 uvicorn api:app --host 0.0.0.0 --port 8888
 ```
 
-API başladıktan sonra şu adreslerde erişebilirsiniz:
+After starting the API, you can access it at:
 - **API**: `http://localhost:8888` (or your domain)
-- **Dokümantasyon**: `http://localhost:8888/docs` (or your domain)
+- **Documentation**: `http://localhost:8888/docs` (or your domain)
 - **Health Check**: `http://localhost:8888/health` (POST only)
 
-## 📋 Endpoint'ler (Sadece POST)
+## 📋 Endpoints (POST Only)
 
-### 1. **POST /scrape** - Gelişmiş Scraping
+### 1. **POST /scrape** - Advanced Scraping
 
 **Headers:**
 ```
@@ -41,164 +41,27 @@ Content-Type: application/json
 ```json
 {
   "url": "https://example.com",
-  "use_proxy": false,
+  "use_proxy": true,
   "proxy_url": null,
   "wait_time": 3,
+  "wait_for_element": false,
+  "element_timeout": 30,
+  "debug": false,
   "take_screenshot": false,
-  "extract_text": true,
   "extract_links": false,
-  "extract_images": false
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "url": "https://example.com",
-  "status_code": 200,
-  "content_length": 12345,
-  "html_content": "<!DOCTYPE html>...",
-  "text_content": "Sayfa metni...",
-  "links": [
-    {
-      "text": "Link metni",
-      "href": "https://example.com/link",
-      "title": "Link başlığı"
-    }
-  ],
-  "images": [
-    {
-      "src": "https://example.com/image.jpg",
-      "alt": "Resim açıklaması",
-      "width": 300,
-      "height": 200
-    }
-  ],
-  "screenshot_path": "screenshot_abc123_1234567890.png",
-  "proxy_used": "http://57.129.81.201:8080",
-  "ip_address": "176.234.132.87",
-  "load_time": 5.23,
-  "timestamp": "2025-08-03 20:40:04"
-}
-```
-
-### 2. **POST /scrape/simple** - Basit Scraping
-
-**Headers:**
-```
-X-API-Key: sk-1234567890abcdef
-```
-
-**Query Parameters:**
-- `url`: Scrape edilecek URL
-- `use_proxy`: Proxy kullanımı (default: false)
-
-**Example:**
-```bash
-curl -X POST "http://localhost:8888/scrape/simple?url=https://example.com&use_proxy=false" \
-  -H "X-API-Key: sk-1234567890abcdef"
-```
-
-### 3. **POST /scrape/selector** - CSS Selector Tabanlı Scraping
-
-**Headers:**
-```
-X-API-Key: sk-1234567890abcdef
-Content-Type: application/json
-```
-
-**Request Body:**
-```json
-{
-  "url": "https://example.com",
-  "selector": "h1.title",
-  "collection": false,
-  "attr": null,
-  "fields": null,
-  "use_proxy": false,
-  "proxy_url": null,
-  "wait_time": 3
-}
-```
-
-**Kullanım Senaryoları:**
-
-#### A. Tekil Element
-```json
-{
-  "url": "https://example.com",
-  "selector": "h1.title"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "url": "https://example.com",
-  "data": "Sayfa Başlığı",
-  "load_time": 2.45,
-  "timestamp": "2025-08-04 02:23:40"
-}
-```
-
-#### B. Tekil Element + Attribute
-```json
-{
-  "url": "https://example.com",
-  "selector": "a.logo",
-  "attr": "href"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "url": "https://example.com",
-  "data": "https://example.com/logo.png",
-  "load_time": 2.45,
-  "timestamp": "2025-08-04 02:23:40"
-}
-```
-
-#### C. Collection (Tekrar Eden)
-```json
-{
-  "url": "https://example.com",
-  "selector": "ul>li",
-  "collection": true
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "url": "https://example.com",
-  "data": ["Öğe 1", "Öğe 2", "Öğe 3"],
-  "load_time": 2.45,
-  "timestamp": "2025-08-04 02:23:40"
-}
-```
-
-#### D. Collection + Çoklu Alan
-```json
-{
-  "url": "https://example.com",
-  "selector": "div.product-item",
-  "collection": true,
-  "fields": {
-    "title": "h3.title",
-    "price": "span.price",
-    "link": {
-      "selector": "a",
-      "attr": "href"
-    },
-    "image": {
-      "selector": "img",
-      "attr": "src"
+  "get": {
+    "title": "h1",
+    "description": "meta[name='description']",
+    "price": ".price"
+  },
+  "collect": {
+    "products": {
+      "selector": ".product",
+      "fields": {
+        "name": "h3",
+        "price": ".price",
+        "link": "a(href)"
+      }
     }
   }
 }
@@ -209,22 +72,52 @@ Content-Type: application/json
 {
   "success": true,
   "url": "https://example.com",
-  "data": [
-    {
-      "title": "Ürün 1",
-      "price": "100 TL",
-      "link": "/urun1",
-      "image": "/resim1.jpg"
+  "data": {
+    "get": {
+      "title": "Page Title",
+      "description": "Page description",
+      "price": "$99.99"
     },
-    {
-      "title": "Ürün 2",
-      "price": "200 TL", 
-      "link": "/urun2",
-      "image": "/resim2.jpg"
+    "collect": {
+      "products": [
+        {
+          "name": "Product 1",
+          "price": "$29.99",
+          "link": "/product1"
+        },
+        {
+          "name": "Product 2", 
+          "price": "$39.99",
+          "link": "/product2"
+        }
+      ]
     }
-  ],
-  "load_time": 2.45,
-  "timestamp": "2025-08-04 02:23:40"
+  },
+  "load_time": 5.23,
+  "timestamp": "2025-01-11 02:45:00",
+  "screenshot_path": null,
+  "links": null,
+  "proxy_used": {
+    "url": "http://198.23.239.134:6540",
+    "type": "HTTP",
+    "index": 3,
+    "total": 10
+  }
+}
+```
+
+### 2. **POST /scrape** - Simple HTML Source
+
+If no `get` or `collect` fields are provided, returns the complete HTML source code:
+
+**Request Body:**
+```json
+{
+  "url": "https://example.com",
+  "use_proxy": true,
+  "wait_time": 3,
+  "take_screenshot": false,
+  "extract_links": false
 }
 ```
 
@@ -233,9 +126,18 @@ Content-Type: application/json
 {
   "success": true,
   "url": "https://example.com",
-  "html": "<!DOCTYPE html>...",
-  "length": 12345,
-  "load_time": 5.23
+  "html_source": "<!DOCTYPE html><html>...</html>",
+  "content_length": 12345,
+  "load_time": 2.5,
+  "timestamp": "2025-01-11 02:45:00",
+  "screenshot_path": null,
+  "links": null,
+  "proxy_used": {
+    "url": "http://198.23.239.134:6540",
+    "type": "HTTP",
+    "index": 3,
+    "total": 10
+  }
 }
 ```
 
@@ -250,13 +152,13 @@ X-API-Key: sk-1234567890abcdef
 ```json
 {
   "status": "healthy",
-  "timestamp": "2025-08-03 20:40:04",
-  "scraper_pool_size": 1,
+  "timestamp": "2025-01-11 02:45:00",
+  "scraper_pool_size": 0,
   "api_key": "sk-1234567..."
 }
 ```
 
-### 4. **POST /proxies** - Mevcut Proxy'ler
+### 4. **POST /proxies** - Available Proxies
 
 **Headers:**
 ```
@@ -267,19 +169,11 @@ X-API-Key: sk-1234567890abcdef
 ```json
 {
   "proxies": [
-    {
-      "url": "http://57.129.81.201:8080",
-      "country": "DE",
-      "type": "HTTP",
-      "status": "working"
-    },
-    {
-      "url": "http://158.69.185.37:3129",
-      "country": "CA",
-      "type": "HTTP", 
-      "status": "working"
-    }
-  ]
+    "http://198.23.239.134:6540",
+    "http://45.38.107.97:6014",
+    "http://107.172.163.27:6543"
+  ],
+  "default": "http://198.23.239.134:6540"
 }
 ```
 
@@ -291,56 +185,56 @@ X-API-Key: sk-1234567890abcdef
 ```
 
 **Query Parameters:**
-- `proxy_url`: Test edilecek proxy URL
+- `proxy_url`: Proxy URL to test
 
 **Example:**
 ```bash
-curl -X POST "http://localhost:8888/test-proxy?proxy_url=http://57.129.81.201:8080" \
+curl -X POST "http://localhost:8888/test-proxy?proxy_url=http://198.23.239.134:6540" \
   -H "X-API-Key: sk-1234567890abcdef"
 ```
 
 **Response:**
 ```json
 {
-  "proxy": "http://57.129.81.201:8080",
+  "proxy": "http://198.23.239.134:6540",
   "working": true,
-  "ip": "176.234.132.87",
-  "load_time": 3.45
+  "ip": "198.23.239.134"
 }
 ```
 
-## 💡 Kullanım Örnekleri
+## 💡 Usage Examples
 
-### 1. **Basit Scraping (cURL)**
-
-```bash
-# Basit scraping
-curl -X POST "http://localhost:8888/scrape/simple?url=https://httpbin.org/html" \
-  -H "X-API-Key: sk-1234567890abcdef"
-
-# Proxy ile scraping
-curl -X POST "http://localhost:8888/scrape/simple?url=https://httpbin.org/ip&use_proxy=true" \
-  -H "X-API-Key: sk-1234567890abcdef"
-```
-
-### 2. **Gelişmiş Scraping (cURL)**
+### 1. **Simple Scraping (cURL)**
 
 ```bash
+# Simple HTML source scraping
+curl -X POST "http://localhost:8888/scrape" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-1234567890abcdef" \
+  -d '{
+    "url": "https://httpbin.org/html",
+    "use_proxy": true,
+    "wait_time": 3
+  }'
+
+# Advanced scraping with element extraction
 curl -X POST "http://localhost:8888/scrape" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sk-1234567890abcdef" \
   -d '{
     "url": "https://quotes.toscrape.com/",
-    "use_proxy": false,
-    "wait_time": 2,
+    "use_proxy": true,
+    "wait_time": 3,
     "take_screenshot": true,
-    "extract_text": true,
     "extract_links": true,
-    "extract_images": false
+    "get": {
+      "title": "h1",
+      "quote": ".quote .text"
+    }
   }'
 ```
 
-### 3. **Python ile Kullanım**
+### 2. **Python Usage**
 
 ```python
 import requests
@@ -352,22 +246,11 @@ headers = {
     "Content-Type": "application/json"
 }
 
-# Basit scraping
-response = requests.post(
-    "http://localhost:8888/scrape/simple",
-    params={"url": "https://example.com", "use_proxy": False},
-    headers=headers
-)
-result = response.json()
-print(f"HTML: {result['html'][:200]}...")
-
-# Gelişmiş scraping
+# Simple HTML source scraping
 data = {
-    "url": "https://quotes.toscrape.com/",
+    "url": "https://example.com",
     "use_proxy": True,
-    "wait_time": 3,
-    "take_screenshot": True,
-    "extract_links": True
+    "wait_time": 3
 }
 
 response = requests.post(
@@ -378,12 +261,47 @@ response = requests.post(
 result = response.json()
 
 if result["success"]:
-    print(f"Content length: {result['content_length']}")
-    print(f"Links found: {len(result['links'])}")
-    print(f"Proxy used: {result['proxy_used']}")
+    print(f"HTML length: {result['content_length']}")
+    print(f"Proxy used: {result['proxy_used']['url']}")
+    print(f"Load time: {result['load_time']}s")
+
+# Advanced scraping with element extraction
+data = {
+    "url": "https://quotes.toscrape.com/",
+    "use_proxy": True,
+    "wait_time": 3,
+    "take_screenshot": True,
+    "extract_links": True,
+    "get": {
+        "title": "h1",
+        "first_quote": ".quote .text"
+    },
+    "collect": {
+        "quotes": {
+            "selector": ".quote",
+            "fields": {
+                "text": ".text",
+                "author": ".author",
+                "tags": ".tags .tag"
+            }
+        }
+    }
+}
+
+response = requests.post(
+    "http://localhost:8888/scrape",
+    json=data,
+    headers=headers
+)
+result = response.json()
+
+if result["success"]:
+    print(f"Title: {result['data']['get']['title']}")
+    print(f"Quotes found: {len(result['data']['collect']['quotes'])}")
+    print(f"Proxy used: {result['proxy_used']['url']}")
 ```
 
-### 4. **JavaScript ile Kullanım**
+### 3. **JavaScript Usage**
 
 ```javascript
 // Headers
@@ -392,57 +310,92 @@ const headers = {
     'Content-Type': 'application/json'
 };
 
-// Basit scraping
-fetch('http://localhost:8888/scrape/simple?url=https://example.com', {
+// Simple HTML source scraping
+fetch('http://localhost:8888/scrape', {
     method: 'POST',
-    headers: headers
+    headers: headers,
+    body: JSON.stringify({
+        url: 'https://example.com',
+        use_proxy: true,
+        wait_time: 3
+    })
 })
 .then(response => response.json())
 .then(data => {
-    console.log('HTML:', data.html.substring(0, 200));
+    if (data.success) {
+        console.log('HTML length:', data.content_length);
+        console.log('Proxy used:', data.proxy_used.url);
+    }
 });
 
-// Gelişmiş scraping
+// Advanced scraping with element extraction
 fetch('http://localhost:8888/scrape', {
     method: 'POST',
     headers: headers,
     body: JSON.stringify({
         url: 'https://quotes.toscrape.com/',
         use_proxy: true,
-        extract_links: true
+        wait_time: 3,
+        get: {
+            title: 'h1',
+            first_quote: '.quote .text'
+        },
+        collect: {
+            quotes: {
+                selector: '.quote',
+                fields: {
+                    text: '.text',
+                    author: '.author'
+                }
+            }
+        }
     })
 })
 .then(response => response.json())
 .then(data => {
-    console.log('Links:', data.links);
+    if (data.success) {
+        console.log('Title:', data.data.get.title);
+        console.log('Quotes:', data.data.collect.quotes);
+    }
 });
 ```
 
-## 🔧 Parametreler
+## 🔧 Parameters
 
-### ScrapeRequest Parametreleri
+### UnifiedScrapeRequest Parameters
 
-| Parametre | Tip | Varsayılan | Açıklama |
-|-----------|-----|------------|----------|
-| `url` | string | - | Scrape edilecek URL (zorunlu) |
-| `use_proxy` | boolean | false | Proxy kullanımı |
-| `proxy_url` | string | null | Özel proxy URL |
-| `wait_time` | integer | 3 | Sayfa yükleme sonrası bekleme süresi (saniye) |
-| `take_screenshot` | boolean | false | Screenshot alma |
-| `extract_text` | boolean | true | Metin içeriği çıkarma |
-| `extract_links` | boolean | false | Link'leri çıkarma |
-| `extract_images` | boolean | false | Resim'leri çıkarma |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | string | - | URL to scrape (required) |
+| `use_proxy` | boolean | true | Use proxy |
+| `proxy_url` | string | null | Custom proxy URL |
+| `wait_time` | integer | 3 | Wait time after page load (seconds) |
+| `wait_for_element` | boolean | false | Wait for specific element |
+| `element_timeout` | integer | 30 | Timeout for element waiting (seconds) |
+| `debug` | boolean | false | Include debug HTML in response |
+| `take_screenshot` | boolean | false | Take screenshot |
+| `extract_links` | boolean | false | Extract all links from page |
+| `get` | object | null | Single element extractions |
+| `collect` | object | null | Collection extractions |
 
-## 🛡️ Güvenlik
+### Supported Proxy Types
+
+- **HTTP**: `http://proxy.com:8080`
+- **HTTPS**: `https://proxy.com:8080`
+- **SOCKS4**: `socks4://proxy.com:1080`
+- **SOCKS5**: `socks5://proxy.com:1080`
+- **With credentials**: `socks5://proxy.com:1080:username:password`
+
+## 🛡️ Security
 
 ### Authentication
-- Tüm endpoint'ler API key gerektirir
-- `X-API-Key` header'ı zorunlu
-- Geçersiz API key'ler 403 hatası döner
+- All endpoints require API key
+- `X-API-Key` header is mandatory
+- Invalid API keys return 401 error
 
 ### Method Restrictions
-- Sadece POST methodları kabul edilir
-- GET methodları 405 (Method Not Allowed) döner
+- Only POST methods are accepted
+- GET methods return 405 (Method Not Allowed)
 
 ### Error Handling
 ```python
@@ -459,30 +412,29 @@ except requests.exceptions.RequestException as e:
     print(f"❌ Network error: {e}")
 ```
 
-## 📊 Performans
+## 📊 Performance
 
-### Önerilen Kullanım
+### Recommended Usage
 
-1. **Küçük siteler için:**
+1. **For small sites:**
    ```json
    {
      "wait_time": 1,
-     "extract_text": true,
-     "extract_links": false
+     "use_proxy": true
    }
    ```
 
-2. **Büyük siteler için:**
+2. **For large sites:**
    ```json
    {
      "wait_time": 5,
-     "extract_text": true,
-     "extract_links": true,
-     "take_screenshot": true
+     "use_proxy": true,
+     "take_screenshot": true,
+     "extract_links": true
    }
    ```
 
-3. **Proxy ile:**
+3. **With proxy rotation:**
    ```json
    {
      "use_proxy": true,
@@ -490,19 +442,19 @@ except requests.exceptions.RequestException as e:
    }
    ```
 
-## 🚨 Hata Kodları
+## 🚨 Error Codes
 
-| Kod | Açıklama |
-|-----|----------|
-| 200 | Başarılı |
-| 401 | API key eksik |
-| 403 | Geçersiz API key |
-| 405 | Method not allowed (GET kullanıldığında) |
-| 500 | Sunucu hatası |
+| Code | Description |
+|------|-------------|
+| 200 | Success |
+| 401 | API key missing |
+| 403 | Invalid API key |
+| 405 | Method not allowed (when GET is used) |
+| 500 | Server error |
 
-## 📝 Örnek Senaryolar
+## 📝 Example Scenarios
 
-### 1. **E-ticaret Sitesi Scraping**
+### 1. **E-commerce Site Scraping**
 
 ```python
 data = {
@@ -510,42 +462,70 @@ data = {
     "use_proxy": True,
     "wait_time": 5,
     "extract_links": True,
-    "extract_images": True
+    "collect": {
+        "products": {
+            "selector": ".product-item",
+            "fields": {
+                "name": "h3",
+                "price": ".price",
+                "image": "img(src)",
+                "link": "a(href)"
+            }
+        }
+    }
 }
 ```
 
-### 2. **Haber Sitesi Scraping**
+### 2. **News Site Scraping**
 
 ```python
 data = {
     "url": "https://news-site.com",
-    "use_proxy": False,
-    "extract_text": True,
-    "extract_links": True
+    "use_proxy": True,
+    "wait_time": 3,
+    "get": {
+        "headline": "h1",
+        "summary": ".summary"
+    },
+    "collect": {
+        "articles": {
+            "selector": ".article",
+            "fields": {
+                "title": "h2",
+                "link": "a(href)",
+                "date": ".date"
+            }
+        }
+    }
 }
 ```
 
-### 3. **Sosyal Medya Scraping**
+### 3. **Social Media Scraping**
 
 ```python
 data = {
     "url": "https://social-media.com/profile",
     "use_proxy": True,
     "wait_time": 10,
-    "take_screenshot": True
+    "take_screenshot": True,
+    "get": {
+        "username": ".username",
+        "followers": ".followers-count"
+    }
 }
 ```
 
-## 🎯 Sonuç
+## 🎯 Conclusion
 
-Bu API ile:
-- ✅ **Güvenli kullanım** - API key authentication
-- ✅ **POST only** - Sadece POST methodları
-- ✅ **Proxy desteği** - IP gizleme
-- ✅ **Esnek parametreler** - İhtiyaca göre ayarlama
-- ✅ **Hızlı sonuç** - Asenkron işlemler
-- ✅ **Detaylı çıktı** - HTML, metin, link'ler, resimler
+This API provides:
+- ✅ **Secure usage** - API key authentication
+- ✅ **POST only** - Only POST methods
+- ✅ **Proxy support** - IP hiding with random rotation
+- ✅ **Flexible parameters** - Customizable settings
+- ✅ **Fast results** - Asynchronous operations
+- ✅ **Detailed output** - HTML, elements, links, screenshots
+- ✅ **Proxy information** - Shows which proxy was used
 
 **API URL**: `http://localhost:8888` (or your domain)
-**Dokümantasyon**: `http://localhost:8888/docs` (or your domain)
-**Authentication**: X-API-Key header required 
+**Documentation**: `http://localhost:8888/docs` (or your domain)
+**Authentication**: X-API-Key header required

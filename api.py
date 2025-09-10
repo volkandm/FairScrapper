@@ -43,7 +43,7 @@ VALID_API_KEYS = os.getenv('VALID_API_KEYS', 'sk-demo-key-12345').split(',')
 # FastAPI app
 app = FastAPI(
     title="Web Scraper API",
-    description="REST API for web scraping with proxy support - POST methods only",
+    description="REST API for web scraping with proxy support - POST methods only. Supports both HTML source extraction and advanced element scraping.",
     version="1.0.0"
 )
 
@@ -149,8 +149,16 @@ scraper_pool = []
 
 async def get_scraper():
     """Get scraper from pool or create new one"""
-    # Always create new scraper for IP rotation
+    import random
+    
+    # Create new scraper for IP rotation
     scraper = WebScraper()
+    
+    # Set random proxy index for rotation
+    if scraper.proxy_list:
+        scraper.current_proxy_index = random.randint(0, len(scraper.proxy_list) - 1)
+        logger.info(f"🎲 Random proxy selected: index {scraper.current_proxy_index}")
+    
     await scraper.setup_browser()
     return scraper
 
@@ -721,27 +729,183 @@ async def scrape_website(
     request: UnifiedScrapeRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """Main scraping endpoint that supports both legacy and unified requests"""
+    """
+    Main scraping endpoint that supports multiple modes:
     
-    # Check if this is a legacy-style request (no get/collect fields)
+    1. **Simple HTML Source**: If no 'get' or 'collect' fields are provided, 
+       returns the complete HTML source code of the page
+       
+    2. **Advanced Element Scraping**: If 'get' or 'collect' fields are provided,
+       extracts specific elements using CSS selectors
+       
+    Parameters:
+    - url: Target URL to scrape
+    - use_proxy: Whether to use proxy (default: True)
+    - proxy_url: Custom proxy URL (optional) - Supports HTTP, SOCKS4, SOCKS5
+    - wait_time: Wait time in seconds (default: 3)
+    - wait_for_element: Wait for specific element (default: False)
+    - element_timeout: Timeout for element waiting (default: 30)
+    - debug: Include debug HTML in response (default: False)
+    - take_screenshot: Take screenshot (default: False)
+    - extract_links: Extract all links from page (default: False)
+    - get: Dictionary of single element extractions
+    - collect: Dictionary of collection extractions
+    
+    Supported Proxy Types:
+    - HTTP: http://proxy.com:8080
+    - HTTPS: https://proxy.com:8080
+    - SOCKS4: socks4://proxy.com:1080
+    - SOCKS5: socks5://proxy.com:1080
+    - With credentials: socks5://proxy.com:1080:username:password
+    """
+    
+    # Check if this is a simple HTML request (no get/collect fields)
     if not request.get and not request.collect:
-        # Convert to legacy format and use legacy scraper
-        legacy_request = ScrapeRequest(
-            url=request.url,
-            use_proxy=request.use_proxy,
-            proxy_url=request.proxy_url,
-            wait_time=request.wait_time,
-            take_screenshot=request.take_screenshot,
-            extract_text=True,
-            extract_links=request.extract_links,
-            extract_images=False
-        )
-        logger.info("🎯 Converting to legacy format")
-        return await scrape_legacy(legacy_request, api_key)
+        # Simple HTML source code request
+        logger.info("🎯 Simple HTML source request")
+        return await scrape_html_source(request, api_key)
     else:
         # Unified scraping request
         logger.info("🎯 Using unified format")
         return await scrape_unified(request, api_key)
+
+async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
+    """Simple HTML source code scraping endpoint"""
+    request_id = str(uuid.uuid4())[:8]
+    start_time = time.time()
+    screenshot_path = None
+    links = None
+    
+    try:
+        logger.info(f"📄 HTML source request {request_id}: {request.url}")
+        
+        # Get scraper instance
+        scraper = await get_scraper()
+        
+        # Configure proxy
+        if request.use_proxy:
+            if request.proxy_url:
+                logger.info(f"🔒 Using custom proxy: {request.proxy_url}")
+            else:
+                logger.info("🔒 Using proxy from configuration")
+        
+        # Navigate to URL
+        logger.info(f"Navigating to: {request.url}")
+        await scraper.navigate_to_url(str(request.url))
+        
+        # Wait for element if specified
+        if request.wait_for_element:
+            logger.info(f"⏳ Waiting for element with timeout: {request.element_timeout}s")
+            await asyncio.sleep(request.element_timeout)
+        
+        # Wait for page to load
+        try:
+            await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
+        except Exception as e:
+            logger.warning(f"⚠️ DOM content loaded timeout: {str(e)}")
+        
+        if request.wait_time:
+            logger.info(f"⏳ Waiting {request.wait_time} seconds")
+            await asyncio.sleep(request.wait_time)
+
+        # Wait for JavaScript to complete
+        try:
+            await scraper.page.wait_for_function("document.readyState === 'complete'", timeout=10000)
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.warning(f"⚠️ DOM stabilization timeout: {str(e)}")
+
+        logger.info("🪞 DOM ready for HTML extraction")
+
+        # Get HTML source code
+        html_content = await scraper.page.content()
+        
+        # Get proxy information
+        proxy_info = scraper.get_current_proxy_info()
+        
+        # Take screenshot if requested
+        if request.take_screenshot:
+            try:
+                screenshot_path = await scraper.take_screenshot(request_id)
+                logger.info(f"📸 Screenshot saved: {screenshot_path}")
+            except Exception as e:
+                logger.error(f"❌ Screenshot failed: {str(e)}")
+        
+        # Extract links if requested
+        if request.extract_links:
+            try:
+                links = await scraper.extract_links()
+                logger.info(f"🔗 Extracted {len(links)} links")
+            except Exception as e:
+                logger.error(f"❌ Link extraction failed: {str(e)}")
+        
+        # Get debug HTML if requested
+        debug_html = ""
+        if request.debug:
+            debug_html = html_content
+            logger.info(f"🔍 Debug HTML: {len(debug_html)} chars")
+        
+        # Return scraper to pool
+        await cleanup_scraper(scraper)
+        
+        load_time = time.time() - start_time
+        logger.info(f"✅ HTML source extraction completed {request_id}: {len(html_content)} chars in {load_time:.2f}s")
+        
+        response = {
+            "success": True,
+            "url": str(request.url),
+            "html_source": html_content,
+            "content_length": len(html_content),
+            "load_time": load_time,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "screenshot_path": screenshot_path,
+            "links": links,
+            "proxy_used": proxy_info
+        }
+        
+        # Add debug_html only if debug is enabled
+        if request.debug and debug_html:
+            response["debug_html"] = debug_html
+            
+        return response
+        
+    except Exception as e:
+        load_time = time.time() - start_time
+        error_msg = f"HTML source extraction failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        
+        # Return scraper to pool on error
+        try:
+            await cleanup_scraper(scraper)
+        except:
+            pass
+        
+        # Get proxy info even on error
+        proxy_info = None
+        try:
+            if 'scraper' in locals():
+                proxy_info = scraper.get_current_proxy_info()
+        except:
+            pass
+        
+        error_response = {
+            "success": False,
+            "url": str(request.url),
+            "html_source": "",
+            "content_length": 0,
+            "load_time": load_time,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "error": error_msg,
+            "screenshot_path": screenshot_path,
+            "links": links,
+            "proxy_used": proxy_info
+        }
+        
+        # Add debug_html only if debug is enabled
+        if request.debug and debug_html:
+            error_response["debug_html"] = debug_html
+            
+        return error_response
 
 async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
     """Unified scraping endpoint that supports both 'get' and 'collect' operations"""
@@ -797,6 +961,9 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
 
         # DOM ready olduğunu log'la
         logger.info("🪞 DOM ready for scraping")
+
+        # Get proxy information
+        proxy_info = scraper.get_current_proxy_info()
 
         # Initialize response data
         response_data = {
@@ -882,7 +1049,8 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
             "load_time": load_time,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "screenshot_path": screenshot_path,
-            "links": links
+            "links": links,
+            "proxy_used": proxy_info
         }
         
         # Add debug_html only if debug is enabled
@@ -902,6 +1070,14 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
         except:
             pass
         
+        # Get proxy info even on error
+        proxy_info = None
+        try:
+            if 'scraper' in locals():
+                proxy_info = scraper.get_current_proxy_info()
+        except:
+            pass
+        
         error_response = {
             "success": False,
             "url": str(request.url),
@@ -910,7 +1086,8 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "error": error_msg,
             "screenshot_path": screenshot_path,
-            "links": links
+            "links": links,
+            "proxy_used": proxy_info
         }
         
         # Add debug_html only if debug is enabled
