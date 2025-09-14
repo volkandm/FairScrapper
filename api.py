@@ -1281,4 +1281,14 @@ async def test_proxy(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8888) 
+    
+    # Load environment variables
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    # Get host and port from environment variables with defaults
+    api_host = os.getenv('API_HOST', '127.0.0.1')
+    api_port = int(os.getenv('API_PORT', '8888'))
+    
+    logger.info(f"🚀 Starting server on {api_host}:{api_port}")
+    uvicorn.run(app, host=api_host, port=api_port) 
