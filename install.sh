@@ -87,6 +87,63 @@ check_python() {
     fi
 }
 
+# Check if virtual environment exists and is valid
+check_venv() {
+    log_step "Checking virtual environment..."
+    
+    if [[ -d "$VENV_NAME" ]]; then
+        # Check if it's a valid Python virtual environment
+        if [[ -f "$VENV_NAME/bin/activate" ]] || [[ -f "$VENV_NAME/Scripts/activate" ]]; then
+            log_success "Valid virtual environment found: $VENV_NAME"
+            return 0
+        else
+            log_warning "Invalid virtual environment found, will recreate"
+            return 1
+        fi
+    else
+        log_info "No virtual environment found"
+        return 1
+    fi
+}
+
+# Check if Python packages are already installed
+check_python_packages() {
+    log_step "Checking Python packages..."
+    
+    if [[ -f "$REQUIREMENTS_FILE" ]]; then
+        # Check if packages are installed in current environment
+        if python -c "import fastapi, playwright, aiohttp, beautifulsoup4" 2>/dev/null; then
+            log_success "Core Python packages already installed"
+            return 0
+        else
+            log_info "Python packages need to be installed"
+            return 1
+        fi
+    else
+        log_warning "Requirements file not found: $REQUIREMENTS_FILE"
+        return 1
+    fi
+}
+
+# Check if Playwright browsers are installed
+check_playwright() {
+    log_step "Checking Playwright browsers..."
+    
+    if python -c "from playwright.sync_api import sync_playwright" 2>/dev/null; then
+        # Check if browsers are installed
+        if playwright --version &> /dev/null; then
+            log_success "Playwright browsers already installed"
+            return 0
+        else
+            log_info "Playwright installed but browsers missing"
+            return 1
+        fi
+    else
+        log_info "Playwright not installed"
+        return 1
+    fi
+}
+
 # Install Python on different systems
 install_python() {
     log_step "Installing Python..."
@@ -144,8 +201,13 @@ install_python() {
 create_venv() {
     log_step "Creating virtual environment..."
     
+    if check_venv; then
+        log_success "Using existing virtual environment: $VENV_NAME"
+        return 0
+    fi
+    
     if [[ -d "$VENV_NAME" ]]; then
-        log_warning "Virtual environment already exists. Removing old one..."
+        log_warning "Invalid virtual environment found. Removing and recreating..."
         rm -rf "$VENV_NAME"
     fi
     
@@ -173,9 +235,34 @@ upgrade_pip() {
     log_success "Pip upgraded to latest version"
 }
 
+# Check if system dependencies are already installed
+check_system_deps() {
+    log_step "Checking system dependencies..."
+    
+    if [[ "$OS" == "linux" ]]; then
+        if command -v apt-get &> /dev/null; then
+            # Check if key packages are installed
+            if dpkg -l | grep -q "libnss3" && \
+               dpkg -l | grep -q "libdrm2" && \
+               dpkg -l | grep -q "libxkbcommon0"; then
+                log_success "Core system dependencies already installed"
+                return 0
+            fi
+        fi
+    fi
+    
+    log_info "System dependencies need to be installed"
+    return 1
+}
+
 # Install system dependencies
 install_system_deps() {
     log_step "Installing system dependencies..."
+    
+    if check_system_deps; then
+        log_success "System dependencies already installed, skipping..."
+        return 0
+    fi
     
     if [[ "$OS" == "linux" ]]; then
         # Install system packages required for Playwright
@@ -288,6 +375,11 @@ install_python_deps() {
         exit 1
     fi
     
+    if check_python_packages; then
+        log_success "Python packages already installed, skipping..."
+        return 0
+    fi
+    
     # Install requirements
     pip install -r "$REQUIREMENTS_FILE"
     log_success "Python dependencies installed"
@@ -296,6 +388,11 @@ install_python_deps() {
 # Install Playwright browsers
 install_playwright() {
     log_step "Installing Playwright browsers..."
+    
+    if check_playwright; then
+        log_success "Playwright browsers already installed, skipping..."
+        return 0
+    fi
     
     # Install Playwright browsers
     playwright install
@@ -316,14 +413,18 @@ install_playwright() {
 setup_env() {
     log_step "Setting up environment configuration..."
     
-    if [[ ! -f "$ENV_FILE" ]]; then
-        if [[ -f "$ENV_EXAMPLE_FILE" ]]; then
-            log_info "Creating .env file from example..."
-            cp "$ENV_EXAMPLE_FILE" "$ENV_FILE"
-            log_success "Environment file created: $ENV_FILE"
-        else
-            log_info "Creating default .env file..."
-            cat > "$ENV_FILE" << EOF
+    if [[ -f "$ENV_FILE" ]]; then
+        log_success "Environment file already exists: $ENV_FILE"
+        return 0
+    fi
+    
+    if [[ -f "$ENV_EXAMPLE_FILE" ]]; then
+        log_info "Creating .env file from example..."
+        cp "$ENV_EXAMPLE_FILE" "$ENV_FILE"
+        log_success "Environment file created: $ENV_FILE"
+    else
+        log_info "Creating default .env file..."
+        cat > "$ENV_FILE" << EOF
 # Server Settings
 API_HOST=127.0.0.1
 API_PORT=8888
@@ -335,10 +436,7 @@ PROXY_LIST=http://proxy1:8080,http://proxy2:8080
 # API Security
 VALID_API_KEYS=sk-demo-key-12345,sk-test-key-67890
 EOF
-            log_success "Default environment file created: $ENV_FILE"
-        fi
-    else
-        log_info "Environment file already exists: $ENV_FILE"
+        log_success "Default environment file created: $ENV_FILE"
     fi
 }
 
@@ -426,25 +524,25 @@ main() {
         install_python
     fi
     
-    # Create virtual environment
+    # Create virtual environment (only if needed)
     create_venv
     
     # Activate virtual environment
     activate_venv
     
-    # Upgrade pip
+    # Upgrade pip (always do this)
     upgrade_pip
     
-    # Install system dependencies
+    # Install system dependencies (only if needed)
     install_system_deps
     
-    # Install Python dependencies
+    # Install Python dependencies (only if needed)
     install_python_deps
     
-    # Install Playwright
+    # Install Playwright (only if needed)
     install_playwright
     
-    # Setup environment
+    # Setup environment (only if needed)
     setup_env
     
     # Make scripts executable
