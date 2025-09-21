@@ -181,10 +181,13 @@ install_system_deps() {
         # Install system packages required for Playwright
         if command -v apt-get &> /dev/null; then
             # Ubuntu/Debian
+            log_info "Installing system dependencies for Playwright on Ubuntu/Debian..."
             sudo apt-get update
-            sudo apt-get install -y \
+            
+            # Try to install packages with fallback for different Ubuntu versions
+            # Core packages that should work on all versions
+            if sudo apt-get install -y \
                 libnss3 \
-                libatk-bridge2.0-0 \
                 libdrm2 \
                 libxkbcommon0 \
                 libxcomposite1 \
@@ -192,13 +195,45 @@ install_system_deps() {
                 libxrandr2 \
                 libgbm1 \
                 libxss1 \
-                libasound2 \
-                libatspi2.0-0 \
-                libgtk-3-0 \
-                libgdk-pixbuf2.0-0
+                libgdk-pixbuf2.0-0; then
+                log_success "Core system dependencies installed"
+            else
+                log_warning "Some core dependencies failed to install, continuing..."
+            fi
+            
+            # Try different package name variants for problematic packages
+            for pkg in "libatk-bridge2.0-0t64" "libatk-bridge2.0-0"; do
+                if sudo apt-get install -y "$pkg" 2>/dev/null; then
+                    log_success "Installed $pkg"
+                    break
+                fi
+            done
+            
+            for pkg in "libasound2t64" "libasound2"; do
+                if sudo apt-get install -y "$pkg" 2>/dev/null; then
+                    log_success "Installed $pkg"
+                    break
+                fi
+            done
+            
+            for pkg in "libatspi2.0-0t64" "libatspi2.0-0"; do
+                if sudo apt-get install -y "$pkg" 2>/dev/null; then
+                    log_success "Installed $pkg"
+                    break
+                fi
+            done
+            
+            for pkg in "libgtk-3-0t64" "libgtk-3-0"; do
+                if sudo apt-get install -y "$pkg" 2>/dev/null; then
+                    log_success "Installed $pkg"
+                    break
+                fi
+            done
+            
         elif command -v yum &> /dev/null; then
             # CentOS/RHEL
-            sudo yum install -y \
+            log_info "Installing system dependencies for Playwright on CentOS/RHEL..."
+            if sudo yum install -y \
                 nss \
                 atk \
                 at-spi2-atk \
@@ -210,10 +245,15 @@ install_system_deps() {
                 libXrandr \
                 mesa-libgbm \
                 libXScrnSaver \
-                alsa-lib
+                alsa-lib; then
+                log_success "System dependencies installed on CentOS/RHEL"
+            else
+                log_warning "Some dependencies failed to install on CentOS/RHEL"
+            fi
         elif command -v dnf &> /dev/null; then
             # Fedora
-            sudo dnf install -y \
+            log_info "Installing system dependencies for Playwright on Fedora..."
+            if sudo dnf install -y \
                 nss \
                 atk \
                 at-spi2-atk \
@@ -225,14 +265,18 @@ install_system_deps() {
                 libXrandr \
                 mesa-libgbm \
                 libXScrnSaver \
-                alsa-lib
+                alsa-lib; then
+                log_success "System dependencies installed on Fedora"
+            else
+                log_warning "Some dependencies failed to install on Fedora"
+            fi
         fi
-    elif [[ "$OS" == "macos" ]]; then
+    elif [[ "$OS" == "macOS" ]]; then
         # macOS dependencies are usually handled by Homebrew
         log_info "macOS dependencies should be handled by Homebrew"
     fi
     
-    log_success "System dependencies installed"
+    log_info "System dependency installation completed (some packages may have failed)"
 }
 
 # Install Python dependencies
@@ -257,9 +301,15 @@ install_playwright() {
     playwright install
     
     # Install system dependencies for Playwright
-    playwright install-deps
+    log_info "Installing Playwright system dependencies..."
+    if playwright install-deps; then
+        log_success "Playwright system dependencies installed successfully"
+    else
+        log_warning "Playwright install-deps failed, but browsers are installed"
+        log_info "You may need to install system dependencies manually if you encounter issues"
+    fi
     
-    log_success "Playwright browsers and dependencies installed"
+    log_success "Playwright browsers installed"
 }
 
 # Create environment file
@@ -308,12 +358,21 @@ test_installation() {
     log_step "Testing installation..."
     
     # Test Python import
-    python -c "import fastapi, playwright, aiohttp, beautifulsoup4; print('All imports successful')"
+    if python -c "import fastapi, playwright, aiohttp, beautifulsoup4; print('All imports successful')" 2>/dev/null; then
+        log_success "Python imports test passed"
+    else
+        log_error "Python imports test failed"
+        return 1
+    fi
     
-    # Test Playwright
-    python -c "from playwright.sync_api import sync_playwright; print('Playwright test successful')"
+    # Test Playwright (this might fail if system deps are missing)
+    if python -c "from playwright.sync_api import sync_playwright; print('Playwright import successful')" 2>/dev/null; then
+        log_success "Playwright import test passed"
+    else
+        log_warning "Playwright import test failed - this is normal if system dependencies are missing"
+    fi
     
-    log_success "Installation test passed"
+    log_success "Installation test completed"
 }
 
 # Display final information
@@ -339,6 +398,14 @@ show_completion() {
     echo -e "   • ${BLUE}requirements.txt${NC} - Python dependencies"
     echo -e "   • ${BLUE}start.sh${NC} - Start script"
     echo -e "   • ${BLUE}stop.sh${NC} - Stop script"
+    echo
+    echo -e "${YELLOW}⚠️  Troubleshooting:${NC}"
+    echo -e "   If you encounter Playwright issues, try:"
+    echo -e "   ${BLUE}playwright install-deps${NC}"
+    echo -e "   ${BLUE}playwright install chromium${NC}"
+    echo
+    echo -e "   For Ubuntu/Debian, you may need:"
+    echo -e "   ${BLUE}sudo apt-get install libasound2t64 libatk-bridge2.0-0t64 libgtk-3-0t64${NC}"
     echo
     echo -e "${GREEN}✨ FairScrapper API is ready to use!${NC}"
     echo

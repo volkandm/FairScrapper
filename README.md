@@ -561,6 +561,41 @@ HEADLESS=True
 TIMEOUT=30000
 ```
 
+## Troubleshooting
+
+If you encounter issues during installation or usage, check our comprehensive troubleshooting guide:
+
+### **Common Issues:**
+- **Ubuntu/Debian package errors** - Package name changes in newer versions
+- **Playwright browser issues** - System dependencies missing
+- **Python virtual environment problems** - Environment not activating
+- **Permission issues** - Scripts not executable
+- **Network issues** - Package download failures
+- **API startup problems** - Port conflicts or module errors
+
+### **Quick Fixes:**
+```bash
+# Fix package issues on Ubuntu/Debian
+sudo apt-get install -y libasound2t64 libatk-bridge2.0-0t64 libgtk-3-0t64
+
+# Reinstall Playwright
+playwright install
+playwright install-deps
+
+# Fix permissions
+chmod +x install.sh start.sh stop.sh
+
+# Check API status
+curl -X POST http://localhost:8888/health -H "X-API-Key: sk-demo-key-12345"
+```
+
+### **Detailed Guide:**
+📖 **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Complete troubleshooting guide with step-by-step solutions
+
+### **Still Need Help?**
+- **GitHub:** [volkandm](https://github.com/volkandm)
+- **Email:** volkan@designmonkeys.net
+
 ## Author
 
 **Volkan AYDIN**
