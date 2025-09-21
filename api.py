@@ -1106,7 +1106,30 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
         
         # Navigate to URL
         logger.info(f"Navigating to: {request.url}")
-        await scraper.navigate_to_url(str(request.url))
+        try:
+            await scraper.navigate_to_url(str(request.url))
+        except Exception as e:
+            error_msg = f"Failed to navigate to URL: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            
+            # Return scraper to pool on error
+            try:
+                await cleanup_scraper(scraper)
+            except:
+                pass
+            
+            return {
+                "success": False,
+                "url": str(request.url),
+                "html_source": "",
+                "content_length": 0,
+                "load_time": time.time() - start_time,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "error": error_msg,
+                "screenshot_path": None,
+                "links": None,
+                "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None
+            }
         
         # Wait for element if specified
         if request.wait_for_element:
@@ -1118,6 +1141,28 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
         except Exception as e:
             logger.warning(f"⚠️ DOM content loaded timeout: {str(e)}")
+            # Check if page is accessible
+            try:
+                current_url = scraper.page.url
+                if "about:blank" in current_url or not current_url:
+                    error_msg = f"Page failed to load: {str(e)}"
+                    logger.error(f"❌ {error_msg}")
+                    
+                    await cleanup_scraper(scraper)
+                    return {
+                        "success": False,
+                        "url": str(request.url),
+                        "html_source": "",
+                        "content_length": 0,
+                        "load_time": time.time() - start_time,
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "error": error_msg,
+                        "screenshot_path": None,
+                        "links": None,
+                        "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None
+                    }
+            except:
+                pass
         
         if request.wait_time:
             logger.info(f"⏳ Waiting {request.wait_time} seconds")
@@ -1247,7 +1292,29 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
         
         # Navigate to URL
         logger.info(f"Navigating to: {request.url}")
-        await scraper.navigate_to_url(str(request.url))
+        try:
+            await scraper.navigate_to_url(str(request.url))
+        except Exception as e:
+            error_msg = f"Failed to navigate to URL: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            
+            # Return scraper to pool on error
+            try:
+                await cleanup_scraper(scraper)
+            except:
+                pass
+            
+            return {
+                "success": False,
+                "url": str(request.url),
+                "data": {"get": {}, "collect": {}},
+                "load_time": time.time() - start_time,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "error": error_msg,
+                "screenshot_path": None,
+                "links": None,
+                "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None
+            }
         
         # Wait for element if specified
         if request.wait_for_element:
@@ -1260,6 +1327,27 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
             await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
         except Exception as e:
             logger.warning(f"⚠️ DOM content loaded timeout: {str(e)}")
+            # Check if page is accessible
+            try:
+                current_url = scraper.page.url
+                if "about:blank" in current_url or not current_url:
+                    error_msg = f"Page failed to load: {str(e)}"
+                    logger.error(f"❌ {error_msg}")
+                    
+                    await cleanup_scraper(scraper)
+                    return {
+                        "success": False,
+                        "url": str(request.url),
+                        "data": {"get": {}, "collect": {}},
+                        "load_time": time.time() - start_time,
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "error": error_msg,
+                        "screenshot_path": None,
+                        "links": None,
+                        "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None
+                    }
+            except:
+                pass
         
         if request.wait_time:
             logger.info(f"⏳ Waiting {request.wait_time} seconds")
@@ -1433,7 +1521,34 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
         
         # Navigate to URL
         logger.info(f"Navigating to: {request.url}")
-        await scraper.navigate_to_url(str(request.url))
+        try:
+            await scraper.navigate_to_url(str(request.url))
+        except Exception as e:
+            error_msg = f"Failed to navigate to URL: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            
+            # Return scraper to pool on error
+            try:
+                await cleanup_scraper(scraper)
+            except:
+                pass
+            
+            return {
+                "success": False,
+                "url": str(request.url),
+                "status_code": 500,
+                "content_length": 0,
+                "html_content": "",
+                "text_content": None,
+                "links": None,
+                "images": None,
+                "screenshot_path": None,
+                "proxy_used": None,
+                "ip_address": None,
+                "load_time": time.time() - start_time,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "error": error_msg
+            }
         
         # Wait additional time
         if request.wait_time > 0:
@@ -1566,6 +1681,7 @@ async def test_proxy(
     api_key: str = Depends(verify_api_key)
 ):
     """Test proxy connection"""
+    scraper = None
     try:
         scraper = await get_scraper()
         # Test with specific proxy URL
@@ -1573,9 +1689,26 @@ async def test_proxy(
         scraper.proxy_list = test_proxy_list
         scraper.current_proxy_index = 0
         
-        await scraper.navigate_to_url("https://httpbin.org/ip")
-        ip_response = await scraper.page.evaluate("() => document.body.innerText")
-        ip_data = json.loads(ip_response)
+        try:
+            await scraper.navigate_to_url("https://httpbin.org/ip")
+        except Exception as e:
+            await cleanup_scraper(scraper)
+            return {
+                "proxy": proxy_url,
+                "working": False,
+                "error": f"Failed to navigate with proxy: {str(e)}"
+            }
+        
+        try:
+            ip_response = await scraper.page.evaluate("() => document.body.innerText")
+            ip_data = json.loads(ip_response)
+        except Exception as e:
+            await cleanup_scraper(scraper)
+            return {
+                "proxy": proxy_url,
+                "working": False,
+                "error": f"Failed to get IP response: {str(e)}"
+            }
         
         await cleanup_scraper(scraper)
         
@@ -1586,10 +1719,16 @@ async def test_proxy(
         }
         
     except Exception as e:
+        if scraper:
+            try:
+                await cleanup_scraper(scraper)
+            except:
+                pass
+        
         return {
             "proxy": proxy_url,
             "working": False,
-            "error": str(e)
+            "error": f"Proxy test failed: {str(e)}"
         }
 
 # Duplicate function removed - using unified_parser instead
