@@ -32,6 +32,8 @@ from scraper import WebScraper
 import time
 import uuid
 import re
+import base64
+import aiohttp
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -212,6 +214,140 @@ def clean_text(text: str) -> str:
     cleaned = re.sub(r'[\t\n\r\s]+', ' ', text)
     # Remove leading/trailing spaces
     return cleaned.strip()
+
+async def get_image_from_browser(scraper: WebScraper, selector: str, max_size_mb: float = 5.0) -> Optional[str]:
+    """
+    Get image data directly from browser (already loaded by Playwright)
+    
+    Args:
+        scraper: WebScraper instance with browser context
+        selector: CSS selector for the image element
+        max_size_mb: Maximum size limit in MB
+    
+    Returns:
+        Base64 encoded image data or None if failed
+    """
+    try:
+        logger.info(f"🖼️ Extracting image from browser: {selector}")
+        
+        # Get image data directly from browser using canvas
+        base64_data = await scraper.page.evaluate(f"""
+            async () => {{
+                const img = document.querySelector('{selector}');
+                if (!img) {{
+                    console.log('Image element not found');
+                    return null;
+                }}
+                
+                // Wait for image to load
+                if (!img.complete) {{
+                    await new Promise(resolve => {{
+                        img.onload = resolve;
+                        img.onerror = resolve;
+                    }});
+                }}
+                
+                if (!img.complete || img.naturalWidth === 0) {{
+                    console.log('Image not loaded properly');
+                    return null;
+                }}
+                
+                // Create canvas to get image data
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                
+                ctx.drawImage(img, 0, 0);
+                
+                // Convert to base64
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+                
+                // Check size (approximate)
+                const sizeBytes = (dataUrl.length * 3) / 4;
+                const sizeMB = sizeBytes / (1024 * 1024);
+                
+                if (sizeMB > {max_size_mb}) {{
+                    console.log('Image too large:', sizeMB.toFixed(2), 'MB');
+                    return null;
+                }}
+                
+                return dataUrl;
+            }}
+        """)
+        
+        if base64_data:
+            # Extract size info for logging
+            size_bytes = (len(base64_data) * 3) / 4
+            size_mb = size_bytes / (1024 * 1024)
+            logger.info(f"✅ Image extracted from browser: {size_mb:.2f}MB")
+            return base64_data
+        else:
+            logger.warning(f"⚠️ Failed to extract image from browser")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Error extracting image from browser: {e}")
+        return None
+
+async def download_image_binary(scraper: WebScraper, image_url: str, max_size_mb: float = 5.0) -> Optional[str]:
+    """
+    Download image and return as base64 encoded string (fallback method)
+    
+    Args:
+        scraper: WebScraper instance with browser context
+        image_url: URL of the image to download
+        max_size_mb: Maximum size in MB (default: 5MB)
+    
+    Returns:
+        Base64 encoded image data or None if failed
+    """
+    try:
+        logger.info(f"🖼️ Downloading image: {image_url}")
+        
+        # Use browser context to download image (respects proxy settings)
+        response = await scraper.page.request.get(image_url)
+        
+        if response.status != 200:
+            logger.error(f"❌ Failed to download image: HTTP {response.status}")
+            return None
+        
+        # Get content type
+        content_type = response.headers.get('content-type', '')
+        if not content_type.startswith('image/'):
+            logger.warning(f"⚠️ Content type is not an image: {content_type}")
+            return None
+        
+        # Get content length
+        content_length = response.headers.get('content-length')
+        if content_length:
+            size_mb = int(content_length) / (1024 * 1024)
+            if size_mb > max_size_mb:
+                logger.warning(f"⚠️ Image too large: {size_mb:.2f}MB > {max_size_mb}MB")
+                return None
+        
+        # Get binary data
+        image_data = await response.body()
+        
+        # Check size after download
+        size_mb = len(image_data) / (1024 * 1024)
+        if size_mb > max_size_mb:
+            logger.warning(f"⚠️ Image too large after download: {size_mb:.2f}MB > {max_size_mb}MB")
+            return None
+        
+        # Encode to base64
+        base64_data = base64.b64encode(image_data).decode('utf-8')
+        
+        # Create data URL
+        data_url = f"data:{content_type};base64,{base64_data}"
+        
+        logger.info(f"✅ Image downloaded successfully: {size_mb:.2f}MB, type: {content_type}")
+        return data_url
+        
+    except Exception as e:
+        logger.error(f"❌ Error downloading image {image_url}: {str(e)}")
+        return None
 
 def parse_selector_and_attr(selector_str: str) -> Tuple[str, Optional[str]]:
     """Parse selector and attribute from notation like 'a(href)', 'img(src)', '>> a(href)', '* a(href)', '.child<div<div>h1'"""
@@ -399,6 +535,17 @@ async def unified_parser(scraper: WebScraper, selector: str, operation_type: str
         selections, operators = parse_query_builder_selector(parsed_selector)
         return await execute_query_builder(scraper, selections, operators, operation_type, attr)
     
+    # Special handling for img elements without src attribute - return binary data
+    logger.info(f"🔍 Checking img detection: selector='{parsed_selector}', ends_with_img={parsed_selector.lower().strip().endswith('img')}, attr='{attr}'")
+    if parsed_selector.lower().strip().endswith('img') and not attr:
+        logger.info("🖼️ Image element detected without src attribute - extracting binary data")
+        return await extract_single_image_binary(scraper, parsed_selector)
+    
+    # Special handling for img(src) - return binary data instead of just URL
+    if parsed_selector.lower().strip().endswith('img') and attr == 'src':
+        logger.info("🖼️ Image src attribute detected - extracting binary data")
+        return await extract_single_image_binary(scraper, parsed_selector)
+    
     # Single element extraction
     if operation_type == "single":
         if attr:
@@ -413,6 +560,16 @@ async def unified_parser(scraper: WebScraper, selector: str, operation_type: str
     
     # Collection extraction
     elif operation_type == "collection":
+        # Special handling for img elements in collection - return binary data
+        if parsed_selector.lower().strip().endswith('img') and not attr:
+            logger.info("🖼️ Image collection detected without src attribute - extracting binary data")
+            return await extract_collection_images_binary(scraper, parsed_selector)
+        
+        # Special handling for img(src) in collection - return binary data instead of just URLs
+        if parsed_selector.lower().strip().endswith('img') and attr == 'src':
+            logger.info("🖼️ Image src collection detected - extracting binary data")
+            return await extract_collection_images_binary(scraper, parsed_selector)
+        
         if fields:
             # Extract with multiple fields
             return await extract_collection_with_fields(scraper, parsed_selector, fields)
@@ -442,6 +599,11 @@ async def extract_single_text(scraper: WebScraper, selector: str) -> str:
     # Parse selector and attribute
     parsed_selector, attr = parse_selector_and_attr(selector)
     logger.info(f"🔍 parsed_selector: '{parsed_selector}', attr: '{attr}'")
+    
+    # Check if this is an img element for binary extraction
+    if parsed_selector.lower().strip().endswith('img') and not attr:
+        logger.info("🖼️ Image element detected in extract_single_text - extracting binary data")
+        return await extract_single_image_binary(scraper, parsed_selector)
     
     if attr:
         # Extract attribute value
@@ -501,6 +663,116 @@ async def extract_single_attribute(scraper: WebScraper, selector: str, attr: str
             return element ? element.getAttribute('{attr}') : '';
         }}
     """) or ""
+
+async def extract_single_image_binary(scraper: WebScraper, selector: str) -> str:
+    """Extract image as binary data (base64 encoded)"""
+    try:
+        logger.info(f"🖼️ Extracting image binary for selector: {selector}")
+        
+        # Try to get image directly from browser first (more efficient)
+        binary_data = await get_image_from_browser(scraper, selector)
+        
+        if binary_data:
+            return binary_data
+        
+        # Fallback: download from URL if browser extraction fails
+        logger.info(f"🖼️ Browser extraction failed, trying URL download...")
+        
+        # First get the src attribute
+        src_url = await scraper.page.evaluate(f"""
+            () => {{
+                const element = document.querySelector('{selector}');
+                console.log('Found element:', element);
+                if (!element) return null;
+                
+                // Try different src attributes
+                const src = element.src || element.getAttribute('src') || element.getAttribute('data-src');
+                console.log('Image src:', src);
+                return src;
+            }}
+        """)
+        
+        logger.info(f"🖼️ Extracted src_url: {src_url}")
+        
+        if not src_url:
+            logger.warning(f"⚠️ No image source found for selector: {selector}")
+            return ""
+        
+        # Handle relative URLs
+        if src_url.startswith('//'):
+            src_url = 'https:' + src_url
+        elif src_url.startswith('/'):
+            # Get current page URL to construct absolute URL
+            current_url = scraper.page.url
+            base_url = '/'.join(current_url.split('/')[:3])
+            src_url = base_url + src_url
+        elif not src_url.startswith('http'):
+            # Relative URL
+            current_url = scraper.page.url
+            base_url = '/'.join(current_url.split('/')[:-1])
+            src_url = base_url + '/' + src_url
+        
+        logger.info(f"🖼️ Image URL: {src_url}")
+        
+        # Download and convert to base64
+        binary_data = await download_image_binary(scraper, src_url)
+        return binary_data or ""
+        
+    except Exception as e:
+        logger.error(f"❌ Error extracting image binary for {selector}: {str(e)}")
+        return ""
+
+async def extract_collection_images_binary(scraper: WebScraper, selector: str) -> List[str]:
+    """Extract multiple images as binary data (base64 encoded)"""
+    try:
+        # Get all image sources
+        src_urls = await scraper.page.evaluate(f"""
+            () => {{
+                const elements = document.querySelectorAll('{selector}');
+                const urls = [];
+                
+                for (let element of elements) {{
+                    const src = element.src || element.getAttribute('src') || element.getAttribute('data-src');
+                    if (src) urls.push(src);
+                }}
+                
+                return urls;
+            }}
+        """)
+        
+        if not src_urls:
+            logger.warning(f"⚠️ No image sources found for selector: {selector}")
+            return []
+        
+        # Process each image URL
+        binary_data_list = []
+        for src_url in src_urls:
+            # Handle relative URLs
+            if src_url.startswith('//'):
+                src_url = 'https:' + src_url
+            elif src_url.startswith('/'):
+                current_url = scraper.page.url
+                base_url = '/'.join(current_url.split('/')[:3])
+                src_url = base_url + src_url
+            elif not src_url.startswith('http'):
+                current_url = scraper.page.url
+                base_url = '/'.join(current_url.split('/')[:-1])
+                src_url = base_url + '/' + src_url
+            
+            logger.info(f"🖼️ Processing image URL: {src_url}")
+            
+            # Download and convert to base64
+            binary_data = await download_image_binary(scraper, src_url)
+            if binary_data:
+                binary_data_list.append(binary_data)
+            else:
+                binary_data_list.append("")
+        
+        return binary_data_list
+        
+    except Exception as e:
+        logger.error(f"❌ Error extracting images binary for {selector}: {str(e)}")
+        return []
 
 async def extract_collection_text(scraper: WebScraper, selector: str) -> List[str]:
     """Extract text from multiple elements"""
@@ -651,6 +923,13 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 js_code_parts.append(f'''
                     result["{field_name}"] = element.getAttribute("href") || "";
                 ''')
+            elif field_selector.lower() == "img" and attr == "src":
+                # Special case for img src - we'll handle this separately in Python
+                js_code_parts.append(f'''
+                    const {field_name}_fieldElement = element.querySelector("{field_selector}");
+                    result["{field_name}_url"] = {field_name}_fieldElement ? 
+                        {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
+                ''')
             else:
                 js_code_parts.append(f'''
                     const {field_name}_fieldElement = element.querySelector("{field_selector}");
@@ -710,7 +989,7 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
     
     logger.info(f"🔍 Collection results: {results}")
     
-    # Clean up whitespace in Python
+    # Clean up whitespace in Python and process image URLs
     cleaned_results = []
     for result in results:
         cleaned_result = {}
@@ -719,6 +998,39 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 cleaned_result[key] = clean_text(value)
             else:
                 cleaned_result[key] = value
+        
+        # Process image URLs and convert to binary data
+        for key, value in result.items():
+            if key.endswith('_url') and value:
+                # This is an image URL that needs to be converted to binary
+                field_name = key[:-4]  # Remove '_url' suffix
+                
+                # Handle relative URLs
+                image_url = value
+                if image_url.startswith('//'):
+                    image_url = 'https:' + image_url
+                elif image_url.startswith('/'):
+                    current_url = scraper.page.url
+                    base_url = '/'.join(current_url.split('/')[:3])
+                    image_url = base_url + image_url
+                elif not image_url.startswith('http'):
+                    current_url = scraper.page.url
+                    base_url = '/'.join(current_url.split('/')[:-1])
+                    image_url = base_url + '/' + image_url
+                
+                logger.info(f"🖼️ Converting image URL to binary: {image_url}")
+                
+                # Download and convert to base64
+                binary_data = await download_image_binary(scraper, image_url)
+                if binary_data:
+                    cleaned_result[field_name] = binary_data
+                else:
+                    cleaned_result[field_name] = ""
+                
+                # Remove the temporary URL field
+                if key in cleaned_result:
+                    del cleaned_result[key]
+        
         # Add all results without filtering
         cleaned_results.append(cleaned_result)
     

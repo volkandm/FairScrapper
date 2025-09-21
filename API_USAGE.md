@@ -202,6 +202,208 @@ curl -X POST "http://localhost:8888/test-proxy?proxy_url=http://198.23.239.134:6
 }
 ```
 
+## 🖼️ Image Scraping Features
+
+The API supports advanced image extraction with base64 encoding:
+
+### **Image Extraction Methods**
+
+1. **Direct Image Element Extraction:**
+   ```json
+   {
+     "get": {
+       "product_image": "img.product-image"
+     }
+   }
+   ```
+
+2. **Image with src Attribute:**
+   ```json
+   {
+     "get": {
+       "product_image": "img(src)"
+     }
+   }
+   ```
+
+3. **Image Collection:**
+   ```json
+   {
+     "collect": {
+       "gallery": {
+         "selector": ".gallery img",
+         "fields": {
+           "image": "img"
+         }
+       }
+     }
+   }
+   ```
+
+### **Image Response Format**
+
+Images are returned as base64 encoded data URLs:
+```json
+{
+  "success": true,
+  "data": {
+    "get": {
+      "product_image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD..."
+    },
+    "collect": {
+      "gallery": [
+        {
+          "image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD..."
+        }
+      ]
+    }
+  }
+}
+```
+
+### **Image Features**
+- ✅ **Base64 encoding** - Ready for direct use
+- ✅ **Size limits** - 5MB maximum (configurable)
+- ✅ **Multiple formats** - JPEG, PNG, WebP, etc.
+- ✅ **Browser extraction** - Direct from loaded images
+- ✅ **URL fallback** - Downloads if browser extraction fails
+- ✅ **Relative URL handling** - Converts to absolute URLs
+
+## 🔧 Advanced Selector Syntax
+
+### **Query Builder Navigation**
+
+The API supports advanced CSS selector navigation with special operators:
+
+#### **Parent Navigation (`<`)**
+Navigate to parent elements:
+```json
+{
+  "get": {
+    "parent_title": "a.test<.product_pod>h1"
+  }
+}
+```
+- Finds `a.test` element
+- Goes to parent `.product_pod`
+- Finds child `h1` within that parent
+
+#### **Child Navigation (`>`)**
+Navigate to child elements:
+```json
+{
+  "get": {
+    "child_text": ".container>div.content>p"
+  }
+}
+```
+- Starts with `.container`
+- Goes to child `div.content`
+- Finds child `p` within that
+
+#### **Sibling Navigation (`+`)**
+Navigate to sibling elements:
+```json
+{
+  "get": {
+    "next_element": ".current+.next"
+  }
+}
+```
+- Finds `.current` element
+- Goes to next sibling
+- Finds `.next` within that sibling
+
+#### **Complex Navigation Chains**
+```json
+{
+  "get": {
+    "complex_selector": "a.test<.product_pod<section>div.alert>strong"
+  }
+}
+```
+
+### **Attribute Extraction**
+
+Extract specific attributes from elements:
+
+#### **Basic Attribute Extraction**
+```json
+{
+  "get": {
+    "link_url": "a(href)",
+    "image_src": "img(src)",
+    "data_value": ".element(data-value)"
+  }
+}
+```
+
+#### **Wildcard Navigation**
+Find attributes in any ancestor:
+```json
+{
+  "collect": {
+    "products": {
+      "selector": ".product-item",
+      "fields": {
+        "link": "* a(href)",
+        "image": "* img(src)"
+      }
+    }
+  }
+}
+```
+
+#### **Parent Navigation with Attributes**
+```json
+{
+  "collect": {
+    "items": {
+      "selector": ".item",
+      "fields": {
+        "parent_link": ".child<div<div>a(href)"
+      }
+    }
+  }
+}
+```
+
+### **Text and HTML Extraction**
+
+#### **Text Only (Default)**
+```json
+{
+  "get": {
+    "title": "h1",
+    "description": ".description"
+  }
+}
+```
+
+#### **HTML Content**
+```json
+{
+  "get": {
+    "content_html": {
+      "selector": ".content",
+      "attr": null
+    }
+  }
+}
+```
+
+#### **Both Text and HTML**
+```json
+{
+  "get": {
+    "content": {
+      "selector": ".content",
+      "include_html": true
+    }
+  }
+}
+```
+
 ## 💡 Usage Examples
 
 ### 1. **Simple Scraping (cURL)**
@@ -230,6 +432,54 @@ curl -X POST "http://localhost:8888/scrape" \
     "get": {
       "title": "h1",
       "quote": ".quote .text"
+    }
+  }'
+
+# Image scraping example
+curl -X POST "http://localhost:8888/scrape" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-1234567890abcdef" \
+  -d '{
+    "url": "https://example-store.com/product",
+    "use_proxy": true,
+    "wait_time": 3,
+    "get": {
+      "product_image": "img.product-image",
+      "gallery_image": "img(src)"
+    },
+    "collect": {
+      "gallery": {
+        "selector": ".gallery img",
+        "fields": {
+          "image": "img"
+        }
+      }
+    }
+  }'
+
+# Query builder navigation example
+curl -X POST "http://localhost:8888/scrape" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-1234567890abcdef" \
+  -d '{
+    "url": "https://example.com/products",
+    "use_proxy": true,
+    "wait_time": 3,
+    "get": {
+      "parent_title": "a.product-link<.product-card>h2",
+      "sibling_price": ".current+.price"
+    },
+    "collect": {
+      "products": {
+        "selector": ".product-item",
+        "fields": {
+          "name": "h3",
+          "price": ".price",
+          "link": "a(href)",
+          "image": "img(src)",
+          "parent_category": ".item<.category>h4"
+        }
+      }
     }
   }'
 ```
@@ -299,6 +549,97 @@ if result["success"]:
     print(f"Title: {result['data']['get']['title']}")
     print(f"Quotes found: {len(result['data']['collect']['quotes'])}")
     print(f"Proxy used: {result['proxy_used']['url']}")
+
+# Image scraping example
+data = {
+    "url": "https://example-store.com/product",
+    "use_proxy": True,
+    "wait_time": 3,
+    "get": {
+        "product_image": "img.product-image",
+        "gallery_image": "img(src)"
+    },
+    "collect": {
+        "gallery": {
+            "selector": ".gallery img",
+            "fields": {
+                "image": "img"
+            }
+        }
+    }
+}
+
+response = requests.post(
+    "http://localhost:8888/scrape",
+    json=data,
+    headers=headers
+)
+result = response.json()
+
+if result["success"]:
+    # Save base64 image to file
+    import base64
+    
+    product_image = result['data']['get']['product_image']
+    if product_image.startswith('data:image'):
+        # Extract base64 data
+        header, data = product_image.split(',', 1)
+        image_data = base64.b64decode(data)
+        
+        with open('product_image.jpg', 'wb') as f:
+            f.write(image_data)
+        print("✅ Product image saved as product_image.jpg")
+    
+    print(f"Gallery images: {len(result['data']['collect']['gallery'])}")
+
+# Query builder navigation example
+data = {
+    "url": "https://example.com/products",
+    "use_proxy": True,
+    "wait_time": 3,
+    "get": {
+        "parent_title": "a.product-link<.product-card>h2",
+        "sibling_price": ".current+.price",
+        "link_url": "a(href)",
+        "image_src": "img(src)"
+    },
+    "collect": {
+        "products": {
+            "selector": ".product-item",
+            "fields": {
+                "name": "h3",
+                "price": ".price",
+                "link": "a(href)",
+                "image": "img(src)",
+                "parent_category": ".item<.category>h4",
+                "wildcard_link": "* a(href)"
+            }
+        }
+    }
+}
+
+response = requests.post(
+    "http://localhost:8888/scrape",
+    json=data,
+    headers=headers
+)
+result = response.json()
+
+if result["success"]:
+    print(f"Parent title: {result['data']['get']['parent_title']}")
+    print(f"Sibling price: {result['data']['get']['sibling_price']}")
+    print(f"Products found: {len(result['data']['collect']['products'])}")
+    
+    # Process images from collection
+    for i, product in enumerate(result['data']['collect']['products']):
+        if product.get('image') and product['image'].startswith('data:image'):
+            # Save each product image
+            header, data = product['image'].split(',', 1)
+            image_data = base64.b64decode(data)
+            
+            with open(f'product_{i}.jpg', 'wb') as f:
+                f.write(image_data)
+            print(f"✅ Product {i} image saved")
 ```
 
 ### 3. **JavaScript Usage**
@@ -356,6 +697,90 @@ fetch('http://localhost:8888/scrape', {
     if (data.success) {
         console.log('Title:', data.data.get.title);
         console.log('Quotes:', data.data.collect.quotes);
+    }
+});
+
+// Image scraping example
+fetch('http://localhost:8888/scrape', {
+    method: 'POST',
+    headers: headers,
+    body: JSON.stringify({
+        url: 'https://example-store.com/product',
+        use_proxy: true,
+        wait_time: 3,
+        get: {
+            product_image: 'img.product-image',
+            gallery_image: 'img(src)'
+        },
+        collect: {
+            gallery: {
+                selector: '.gallery img',
+                fields: {
+                    image: 'img'
+                }
+            }
+        }
+    })
+})
+.then(response => response.json())
+.then(data => {
+    if (data.success) {
+        // Display image directly in browser
+        const productImage = data.data.get.product_image;
+        if (productImage.startsWith('data:image')) {
+            const img = document.createElement('img');
+            img.src = productImage;
+            img.style.maxWidth = '300px';
+            document.body.appendChild(img);
+        }
+        
+        console.log('Gallery images:', data.data.collect.gallery.length);
+    }
+});
+
+// Query builder navigation example
+fetch('http://localhost:8888/scrape', {
+    method: 'POST',
+    headers: headers,
+    body: JSON.stringify({
+        url: 'https://example.com/products',
+        use_proxy: true,
+        wait_time: 3,
+        get: {
+            parent_title: 'a.product-link<.product-card>h2',
+            sibling_price: '.current+.price',
+            link_url: 'a(href)',
+            image_src: 'img(src)'
+        },
+        collect: {
+            products: {
+                selector: '.product-item',
+                fields: {
+                    name: 'h3',
+                    price: '.price',
+                    link: 'a(href)',
+                    image: 'img(src)',
+                    parent_category: '.item<.category>h4',
+                    wildcard_link: '* a(href)'
+                }
+            }
+        }
+    })
+})
+.then(response => response.json())
+.then(data => {
+    if (data.success) {
+        console.log('Parent title:', data.data.get.parent_title);
+        console.log('Sibling price:', data.data.get.sibling_price);
+        console.log('Products found:', data.data.collect.products.length);
+        
+        // Process images
+        data.data.collect.products.forEach((product, index) => {
+            if (product.image && product.image.startsWith('data:image')) {
+                console.log(`Product ${index} image available`);
+                // You can display or save the image here
+            }
+        });
     }
 });
 ```
@@ -454,7 +879,7 @@ except requests.exceptions.RequestException as e:
 
 ## 📝 Example Scenarios
 
-### 1. **E-commerce Site Scraping**
+### 1. **E-commerce Site Scraping with Images**
 
 ```python
 data = {
@@ -462,21 +887,24 @@ data = {
     "use_proxy": True,
     "wait_time": 5,
     "extract_links": True,
+    "take_screenshot": True,
     "collect": {
         "products": {
             "selector": ".product-item",
             "fields": {
                 "name": "h3",
                 "price": ".price",
-                "image": "img(src)",
-                "link": "a(href)"
+                "image": "img(src)",  # Returns base64 data
+                "link": "a(href)",
+                "category": ".item<.category>h4",  # Parent navigation
+                "rating": ".rating+.stars"  # Sibling navigation
             }
         }
     }
 }
 ```
 
-### 2. **News Site Scraping**
+### 2. **News Site Scraping with Images**
 
 ```python
 data = {
@@ -485,7 +913,8 @@ data = {
     "wait_time": 3,
     "get": {
         "headline": "h1",
-        "summary": ".summary"
+        "summary": ".summary",
+        "featured_image": "img.featured(src)"  # Base64 image
     },
     "collect": {
         "articles": {
@@ -493,14 +922,16 @@ data = {
             "fields": {
                 "title": "h2",
                 "link": "a(href)",
-                "date": ".date"
+                "date": ".date",
+                "thumbnail": "img(src)",  # Base64 image
+                "author": ".author<.meta>span"  # Parent navigation
             }
         }
     }
 }
 ```
 
-### 3. **Social Media Scraping**
+### 3. **Social Media Scraping with Profile Images**
 
 ```python
 data = {
@@ -510,7 +941,68 @@ data = {
     "take_screenshot": True,
     "get": {
         "username": ".username",
-        "followers": ".followers-count"
+        "followers": ".followers-count",
+        "profile_image": "img.avatar(src)"  # Base64 image
+    },
+    "collect": {
+        "posts": {
+            "selector": ".post",
+            "fields": {
+                "content": ".content",
+                "image": "img(src)",  # Base64 image
+                "likes": ".likes+.count"  # Sibling navigation
+            }
+        }
+    }
+}
+```
+
+### 4. **Image Gallery Scraping**
+
+```python
+data = {
+    "url": "https://gallery-site.com/album",
+    "use_proxy": True,
+    "wait_time": 5,
+    "collect": {
+        "images": {
+            "selector": ".gallery img",
+            "fields": {
+                "image": "img",  # Direct base64 extraction
+                "caption": ".caption",
+                "download_link": "a(href)"
+            }
+        }
+    }
+}
+```
+
+### 5. **Complex Navigation Scraping**
+
+```python
+data = {
+    "url": "https://complex-site.com/products",
+    "use_proxy": True,
+    "wait_time": 5,
+    "get": {
+        "page_title": "h1",
+        "parent_category": "a.product<.category>h2",  # Parent navigation
+        "sibling_info": ".current+.info",  # Sibling navigation
+        "wildcard_link": "* a(href)"  # Wildcard navigation
+    },
+    "collect": {
+        "products": {
+            "selector": ".product-item",
+            "fields": {
+                "name": "h3",
+                "price": ".price",
+                "image": "img(src)",  # Base64 image
+                "link": "a(href)",
+                "parent_brand": ".item<.brand>span",  # Parent navigation
+                "next_availability": ".stock+.availability",  # Sibling navigation
+                "any_category": "* .category"  # Wildcard navigation
+            }
+        }
     }
 }
 ```
@@ -525,6 +1017,34 @@ This API provides:
 - ✅ **Fast results** - Asynchronous operations
 - ✅ **Detailed output** - HTML, elements, links, screenshots
 - ✅ **Proxy information** - Shows which proxy was used
+- ✅ **Image scraping** - Base64 encoded image extraction
+- ✅ **Advanced selectors** - Query builder with parent/child/sibling navigation
+- ✅ **Attribute extraction** - Support for any HTML attribute
+- ✅ **Wildcard navigation** - Find elements in any ancestor
+- ✅ **Complex selectors** - Chain multiple navigation operations
+- ✅ **Size limits** - Configurable image size limits (5MB default)
+- ✅ **Multiple formats** - Support for all image formats (JPEG, PNG, WebP, etc.)
+
+### **Key Features Summary**
+
+#### **Image Scraping**
+- Direct base64 extraction from browser
+- URL-based download fallback
+- Size limit protection (5MB default)
+- Support for all image formats
+- Relative URL handling
+
+#### **Query Builder Navigation**
+- **Parent Navigation (`<`)**: `a.test<.product_pod>h1`
+- **Child Navigation (`>`)**: `.container>div.content>p`
+- **Sibling Navigation (`+`)**: `.current+.next`
+- **Wildcard Navigation (`*`)**: `* a(href)`
+- **Complex Chains**: `a.test<.product_pod<section>div.alert>strong`
+
+#### **Attribute Extraction**
+- **Basic**: `a(href)`, `img(src)`, `.element(data-value)`
+- **With Navigation**: `.child<div<div>a(href)`
+- **Wildcard**: `* a(href)`
 
 **API URL**: `http://localhost:8888` (or your domain)
 **Documentation**: `http://localhost:8888/docs` (or your domain)

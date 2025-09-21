@@ -79,6 +79,7 @@ curl -X POST "http://localhost:8888/health" \
 
 ### Web Scraping
 ```bash
+# Basic scraping
 curl -X POST "http://localhost:8888/scrape" \
      -H "Content-Type: application/json" \
      -H "X-API-Key: sk-demo-key-12345" \
@@ -88,6 +89,55 @@ curl -X POST "http://localhost:8888/scrape" \
        "get": {
          "title": "h1",
          "description": "meta[name=description](content)"
+       }
+     }'
+
+# Image scraping with base64 extraction
+curl -X POST "http://localhost:8888/scrape" \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: sk-demo-key-12345" \
+     -d '{
+       "url": "https://example-store.com/product",
+       "use_proxy": true,
+       "get": {
+         "product_image": "img.product-image",
+         "gallery_image": "img(src)"
+       },
+       "collect": {
+         "gallery": {
+           "selector": ".gallery img",
+           "fields": {
+             "image": "img"
+           }
+         }
+       }
+     }'
+
+# Advanced navigation with query builder
+curl -X POST "http://localhost:8888/scrape" \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: sk-demo-key-12345" \
+     -d '{
+       "url": "https://example.com/products",
+       "use_proxy": true,
+       "get": {
+         "parent_title": "a.product-link<.product-card>h2",
+         "sibling_price": ".current+.price",
+         "link_url": "a(href)",
+         "image_src": "img(src)"
+       },
+       "collect": {
+         "products": {
+           "selector": ".product-item",
+           "fields": {
+             "name": "h3",
+             "price": ".price",
+             "link": "a(href)",
+             "image": "img(src)",
+             "parent_category": ".item<.category>h4",
+             "wildcard_link": "* a(href)"
+           }
+         }
        }
      }'
 ```
@@ -118,6 +168,27 @@ Use a different port in `.env` file:
 ```env
 API_PORT=8889
 ```
+
+## 🖼️ New Features (2025)
+
+### **Image Scraping**
+- ✅ **Base64 extraction** - Images returned as data URLs
+- ✅ **Size limits** - 5MB maximum protection
+- ✅ **Multiple formats** - JPEG, PNG, WebP support
+- ✅ **Browser extraction** - Direct from loaded images
+- ✅ **URL fallback** - Downloads if browser extraction fails
+
+### **Advanced Selectors**
+- ✅ **Query Builder** - Parent (`<`), Child (`>`), Sibling (`+`) navigation
+- ✅ **Attribute extraction** - `a(href)`, `img(src)`, `.element(data-value)`
+- ✅ **Wildcard navigation** - `* a(href)` finds in any ancestor
+- ✅ **Complex chains** - `a.test<.product_pod<section>div.alert>strong`
+
+### **Enhanced Collection**
+- ✅ **Multiple fields** - Extract various data from each item
+- ✅ **Image collections** - Extract multiple images as base64
+- ✅ **Parent navigation** - `.child<div<div>h1` syntax
+- ✅ **Sibling navigation** - `.current+.next` syntax
 
 ## 📊 Script Features
 
