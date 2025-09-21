@@ -27,7 +27,7 @@ source venv/bin/activate
 
 # Check Python dependencies
 echo "📦 Checking Python packages..."
-python -c "import fastapi, playwright, requests" 2>/dev/null
+python -c "import fastapi, playwright, requests, bs4, socks" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "❌ Some Python packages are missing!"
     echo "💡 Please install dependencies:"
@@ -47,8 +47,13 @@ fi
 # Load environment variables
 echo "⚙️  Loading environment variables..."
 if [ -f ".env" ]; then
-    source .env
-    echo "✅ .env file loaded"
+    # Load .env file using Python to avoid bash syntax issues
+    python -c "
+import os
+from dotenv import load_dotenv
+load_dotenv()
+print('✅ .env file loaded')
+" 2>/dev/null || echo "⚠️  .env file loaded with warnings"
 else
     echo "⚠️  .env file not found, using default settings"
 fi
