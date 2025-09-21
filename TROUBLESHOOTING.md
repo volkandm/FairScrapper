@@ -2,7 +2,33 @@
 
 ## 🚨 Common Installation Issues
 
-### 1. **Ubuntu/Debian Package Errors**
+### 1. **FastAPI Deprecation Warnings**
+
+#### Problem: `on_event is deprecated, use lifespan event handlers instead`
+
+**Solution:**
+```bash
+# This warning is fixed in the latest version
+# The API now uses modern lifespan event handlers
+# No action needed - just informational
+```
+
+### 2. **Host Configuration Issues**
+
+#### Problem: API always starts on 127.0.0.1 instead of configured host
+
+**Solution:**
+```bash
+# The API automatically converts 127.0.0.1 to 0.0.0.0 for external access
+# To use a specific host, set it in .env file:
+echo "API_HOST=0.0.0.0" >> .env
+echo "API_PORT=8888" >> .env
+
+# Or for localhost only:
+echo "API_HOST=127.0.0.1" >> .env
+```
+
+### 3. **Ubuntu/Debian Package Errors**
 
 #### Problem: `Package 'libasound2' has no installation candidate`
 

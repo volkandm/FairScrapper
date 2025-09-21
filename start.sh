@@ -47,13 +47,11 @@ fi
 # Load environment variables
 echo "⚙️  Loading environment variables..."
 if [ -f ".env" ]; then
-    # Load .env file using Python to avoid bash syntax issues
-    python -c "
-import os
-from dotenv import load_dotenv
-load_dotenv()
-print('✅ .env file loaded')
-" 2>/dev/null || echo "⚠️  .env file loaded with warnings"
+    # Load .env file and export variables
+    set -a
+    source .env
+    set +a
+    echo "✅ .env file loaded"
 else
     echo "⚠️  .env file not found, using default settings"
 fi
@@ -61,6 +59,12 @@ fi
 # Show Host and Port information
 API_HOST=${API_HOST:-"127.0.0.1"}
 API_PORT=${API_PORT:-"8888"}
+
+# If host is 127.0.0.1, change to 0.0.0.0 for external access
+if [ "$API_HOST" = "127.0.0.1" ]; then
+    API_HOST="0.0.0.0"
+    echo "🌐 Host changed from 127.0.0.1 to 0.0.0.0 for external access"
+fi
 
 echo "🌍 Server settings:"
 echo "   Host: $API_HOST"

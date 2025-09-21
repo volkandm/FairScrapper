@@ -42,11 +42,27 @@ logger = logging.getLogger(__name__)
 # API Keys (load from environment variables for security)
 VALID_API_KEYS = os.getenv('VALID_API_KEYS', 'sk-demo-key-12345').split(',')
 
+# Lifespan event handler
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
+    logger.info("🚀 Starting Web Scraper API...")
+    yield
+    # Shutdown
+    logger.info("🛑 Shutting down Web Scraper API...")
+    for scraper in scraper_pool:
+        await scraper.close()
+    scraper_pool.clear()
+
 # FastAPI app
 app = FastAPI(
     title="Web Scraper API",
     description="REST API for web scraping with proxy support - POST methods only. Supports both HTML source extraction and advanced element scraping.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Unified scraping models
@@ -168,19 +184,6 @@ async def cleanup_scraper(scraper: WebScraper):
     """Cleanup scraper resources"""
     await scraper.close()
     # Don't remove from pool since we're not using pool anymore
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize on startup"""
-    logger.info("🚀 Starting Web Scraper API...")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("🛑 Shutting down Web Scraper API...")
-    for scraper in scraper_pool:
-        await scraper.close()
-    scraper_pool.clear()
 
 @app.post("/")
 async def root():
@@ -1601,6 +1604,11 @@ if __name__ == "__main__":
     # Get host and port from environment variables with defaults
     api_host = os.getenv('API_HOST', '127.0.0.1')
     api_port = int(os.getenv('API_PORT', '8888'))
+    
+    # If host is 127.0.0.1, change to 0.0.0.0 for external access
+    if api_host == '127.0.0.1':
+        api_host = '0.0.0.0'
+        logger.info("🌐 Host changed from 127.0.0.1 to 0.0.0.0 for external access")
     
     logger.info(f"🚀 Starting server on {api_host}:{api_port}")
     uvicorn.run(app, host=api_host, port=api_port) 
