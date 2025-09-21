@@ -2,17 +2,34 @@
 
 ## 📋 Quick Start
 
-### 🐧 Linux/macOS Users
+### 🚀 **Automated Installation (Recommended)**
+
+First, run the installation script to set up everything automatically:
+
+```bash
+# Make scripts executable
+chmod +x install.sh start.sh stop.sh
+
+# Run automated installation
+./install.sh
+
+# Start the API
+./start.sh
+```
+
+### 🐧 **Manual Start (Linux/macOS)**
 ```bash
 ./start.sh
 ```
 
-### 🪟 Windows Users
+### 🪟 **Manual Start (Windows)**
 ```cmd
 start.bat
 ```
 
 ## ⚙️ Manual Setup (First Time)
+
+**Note:** If you used the automated installation script (`./install.sh`), you can skip this section.
 
 ### 1. Create Virtual Environment
 ```bash
@@ -33,6 +50,18 @@ pip install -r requirements.txt
 ### 3. Install Playwright Browsers
 ```bash
 playwright install
+```
+
+### 4. Install System Dependencies (Linux)
+```bash
+# Ubuntu/Debian
+sudo apt-get install libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libasound2
+
+# CentOS/RHEL
+sudo yum install nss atk at-spi2-atk gtk3 libdrm libxkbcommon libXcomposite libXdamage libXrandr mesa-libgbm libXScrnSaver alsa-lib
+
+# Fedora
+sudo dnf install nss atk at-spi2-atk gtk3 libdrm libxkbcommon libXcomposite libXdamage libXrandr mesa-libgbm libXScrnSaver alsa-lib
 ```
 
 ## 🔧 Configuration

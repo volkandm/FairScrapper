@@ -44,6 +44,26 @@ FairScrapper provides a sustainable web scraping solution with proxy rotation an
 
 ## Quick Start
 
+### 🚀 **Automated Installation (Recommended)**
+
+1. **Run the installation script:**
+   ```bash
+   ./install.sh
+   ```
+
+2. **Start the API:**
+   ```bash
+   ./start.sh
+   ```
+
+3. **Test the installation:**
+   ```bash
+   curl -X POST "http://localhost:8888/health" \
+        -H "X-API-Key: sk-demo-key-12345"
+   ```
+
+### 📋 **Manual Installation**
+
 1. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
@@ -59,6 +79,7 @@ FairScrapper provides a sustainable web scraping solution with proxy rotation an
    ```bash
    curl -X POST "http://localhost:8888/scrape" \
         -H "Content-Type: application/json" \
+        -H "X-API-Key: sk-demo-key-12345" \
         -d '{
           "url": "https://example.com",
           "use_proxy": false,
@@ -72,12 +93,41 @@ FairScrapper provides a sustainable web scraping solution with proxy rotation an
 
 ## Installation
 
-### Prerequisites
+### 🚀 **Automated Installation (Recommended)**
+
+The easiest way to get started is using our automated installation script:
+
+```bash
+# Make the script executable
+chmod +x install.sh
+
+# Run the installation
+./install.sh
+```
+
+**What the script does:**
+- ✅ Checks and installs Python 3.8+ if needed
+- ✅ Creates virtual environment
+- ✅ Installs all Python dependencies
+- ✅ Installs Playwright browsers and system dependencies
+- ✅ Sets up environment configuration
+- ✅ Makes all scripts executable
+- ✅ Tests the installation
+
+**Supported Operating Systems:**
+- 🐧 **Linux** (Ubuntu, Debian, CentOS, RHEL, Fedora, Arch)
+- 🍎 **macOS** (with Homebrew)
+
+### 📋 **Manual Installation**
+
+If you prefer manual installation or the automated script doesn't work:
+
+#### Prerequisites
 
 - Python 3.8+
 - Node.js (for Playwright browsers)
 
-### Step-by-Step Installation
+#### Step-by-Step Installation
 
 1. **Clone the repository:**
    ```bash
@@ -101,13 +151,22 @@ FairScrapper provides a sustainable web scraping solution with proxy rotation an
    playwright install
    ```
 
-5. **Configure environment (optional):**
+5. **Install system dependencies (Linux):**
+   ```bash
+   # Ubuntu/Debian
+   sudo apt-get install libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libasound2
+   
+   # CentOS/RHEL
+   sudo yum install nss atk at-spi2-atk gtk3 libdrm libxkbcommon libXcomposite libXdamage libXrandr mesa-libgbm libXScrnSaver alsa-lib
+   ```
+
+6. **Configure environment (optional):**
    ```bash
    cp env_example.txt .env
    # Edit .env with your settings
    ```
 
-6. **Start the application:**
+7. **Start the application:**
    ```bash
    python api.py
    ```
