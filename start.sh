@@ -4,6 +4,12 @@
 # Author: Volkan AYDIN
 # Year: 2025
 
+# Parse args
+DEBUG=0
+if [ "$1" = "--debug" ]; then
+    DEBUG=1
+fi
+
 echo "🚀 Starting FairScrapper API..."
 echo "=================================="
 
@@ -41,7 +47,12 @@ echo "🌐 Checking Playwright browsers..."
 python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.chromium.launch(); p.stop()" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "⚠️  Playwright browsers missing, installing..."
-    playwright install
+    if [ $DEBUG -eq 1 ]; then
+        playwright install
+    else
+        # Suppress install output in non-debug mode
+        playwright install >/dev/null 2>&1
+    fi
 fi
 
 # Load environment variables
@@ -80,12 +91,14 @@ echo "🛑 Press Ctrl+C to stop"
 echo "=================================="
 
 # Run API (background by default, foreground with --debug)
-if [ "$1" = "--debug" ]; then
+if [ $DEBUG -eq 1 ]; then
     echo "🪲 Debug mode: running in foreground"
     python api.py
 else
     echo "🌓 Running in background (nohup)"
-    nohup python api.py > api.log 2>&1 &
+    # Disable job control messages to keep terminal clean
+    set +m
+    nohup python api.py </dev/null >> api.log 2>&1 &
     APP_PID=$!
     echo "✅ Started in background. PID: $APP_PID"
     echo "📝 Logs: tail -f api.log"
