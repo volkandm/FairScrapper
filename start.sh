@@ -79,5 +79,14 @@ echo ""
 echo "🛑 Press Ctrl+C to stop"
 echo "=================================="
 
-# Run API
-python api.py
+# Run API (background by default, foreground with --debug)
+if [ "$1" = "--debug" ]; then
+    echo "🪲 Debug mode: running in foreground"
+    python api.py
+else
+    echo "🌓 Running in background (nohup)"
+    nohup python api.py > api.log 2>&1 &
+    APP_PID=$!
+    echo "✅ Started in background. PID: $APP_PID"
+    echo "📝 Logs: tail -f api.log"
+fi
