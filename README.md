@@ -28,6 +28,7 @@ FairScrapper provides a sustainable web scraping solution with proxy rotation an
 - 🎯 Unified API with `get` and `collect` operations
 - 🔍 Advanced CSS selector syntax with parent navigation
 - 📦 Attribute extraction support
+- 🔒 HTTPS/SSL support with self-signed certificates
 - 🌐 Proxy rotation and load balancing
 - 📸 Screenshot capabilities
 - 🐛 Debug mode with HTML output
@@ -58,6 +59,12 @@ FairScrapper provides a sustainable web scraping solution with proxy rotation an
 
 3. **Test the installation:**
    ```bash
+   # HTTPS (default - use -k to ignore self-signed certificate)
+   curl -X POST "https://localhost:8888/health" \
+        -H "X-API-Key: sk-demo-key-12345" \
+        -k
+   
+   # Or HTTP (if SSL disabled)
    curl -X POST "http://localhost:8888/health" \
         -H "X-API-Key: sk-demo-key-12345"
    ```
@@ -185,6 +192,11 @@ API_HOST=0.0.0.0
 API_PORT=8888
 DEBUG=False
 
+# SSL/HTTPS Configuration
+SSL_ENABLED=true
+SSL_CERT_FILE=./ssl/cert.pem
+SSL_KEY_FILE=./ssl/key.pem
+
 # Browser Configuration
 HEADLESS=True
 TIMEOUT=30000
@@ -230,11 +242,112 @@ PROXY_TEST_INTERVAL=3600
 
 **Note:** JSON file method is deprecated. FairScrapper now uses environment variables for better security and flexibility.
 
+### SSL/HTTPS Setup
+
+FairScrapper supports HTTPS with self-signed certificates for secure API communication.
+
+#### 🔒 **Automated SSL Setup (Recommended)**
+
+The installation script automatically generates self-signed SSL certificates:
+
+```bash
+./install.sh
+```
+
+This will:
+- Generate a 4096-bit RSA key
+- Create a self-signed certificate valid for 365 days
+- Set proper file permissions (600 for key, 644 for cert)
+- Store certificates in `./ssl/` directory
+
+#### 🔐 **Manual SSL Certificate Generation**
+
+You can also use the dedicated SSL setup script:
+
+```bash
+# Basic usage (non-interactive)
+./install_ssl.sh
+
+# Interactive mode (customize certificate details)
+./install_ssl.sh --interactive
+
+# Force regeneration (even if certificates exist)
+./install_ssl.sh --force
+
+# Show help
+./install_ssl.sh --help
+```
+
+Or generate certificates manually with OpenSSL:
+
+```bash
+# Create SSL directory
+mkdir -p ssl
+
+# Generate self-signed certificate (valid for 365 days)
+openssl req -x509 -newkey rsa:4096 -nodes \
+    -out ssl/cert.pem \
+    -keyout ssl/key.pem \
+    -days 365 \
+    -subj "/C=US/ST=State/L=City/O=FairScrapper/OU=API/CN=localhost"
+
+# Set proper permissions
+chmod 600 ssl/key.pem
+chmod 644 ssl/cert.pem
+```
+
+#### 📝 **SSL Configuration**
+
+Enable/disable SSL in your `.env` file:
+
+```env
+# Enable HTTPS
+SSL_ENABLED=true
+SSL_CERT_FILE=./ssl/cert.pem
+SSL_KEY_FILE=./ssl/key.pem
+
+# Or disable for HTTP only
+SSL_ENABLED=false
+```
+
+#### 🌐 **Using HTTPS API**
+
+When SSL is enabled, the API will be available via HTTPS:
+
+```bash
+# Test with curl (use -k to ignore self-signed certificate warning)
+curl -X POST https://localhost:8888/health \
+     -H "X-API-Key: sk-demo-key-12345" \
+     -k
+
+# Access documentation
+https://localhost:8888/docs
+```
+
+**Note:** For production environments, use proper SSL certificates from a Certificate Authority (CA) like Let's Encrypt instead of self-signed certificates.
+
+#### 🔑 **Production SSL Certificates**
+
+For production deployment with Let's Encrypt:
+
+```bash
+# Install certbot
+sudo apt-get install certbot
+
+# Generate certificates
+sudo certbot certonly --standalone -d yourdomain.com
+
+# Update .env with Let's Encrypt certificates
+SSL_CERT_FILE=/etc/letsencrypt/live/yourdomain.com/fullchain.pem
+SSL_KEY_FILE=/etc/letsencrypt/live/yourdomain.com/privkey.pem
+```
+
 ## API Documentation
 
 ### Base URL
 ```
-http://localhost:8888
+https://localhost:8888  # HTTPS (default with SSL enabled)
+http://localhost:8888   # HTTP (if SSL disabled)
 ```
 
 ### Endpoints

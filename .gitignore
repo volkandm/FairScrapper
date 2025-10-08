@@ -67,6 +67,15 @@ tmp/
 working_proxies.json
 proxy_list.json
 
+# SSL/HTTPS Certificates
+ssl/
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+
 # Database
 *.db
 *.sqlite

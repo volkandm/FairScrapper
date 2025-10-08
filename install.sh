@@ -429,6 +429,11 @@ setup_env() {
 API_HOST=127.0.0.1
 API_PORT=8888
 
+# SSL/HTTPS Configuration
+SSL_ENABLED=true
+SSL_CERT_FILE=./ssl/cert.pem
+SSL_KEY_FILE=./ssl/key.pem
+
 # Proxy Settings
 PROXY_ENABLED=true
 PROXY_LIST=http://proxy1:8080,http://proxy2:8080
@@ -440,6 +445,32 @@ EOF
     fi
 }
 
+# Setup SSL certificates
+setup_ssl_certificates() {
+    log_step "Setting up SSL/HTTPS certificates..."
+    
+    # Check if install_ssl.sh exists
+    if [[ ! -f "install_ssl.sh" ]]; then
+        log_warning "install_ssl.sh not found, skipping SSL setup"
+        log_info "You can run ./install_ssl.sh manually later to enable HTTPS"
+        return 0
+    fi
+    
+    # Make install_ssl.sh executable
+    chmod +x install_ssl.sh
+    
+    # Run SSL installation script (non-interactive mode)
+    log_info "Running SSL certificate setup..."
+    if ./install_ssl.sh --force; then
+        log_success "SSL certificates configured successfully"
+        return 0
+    else
+        log_warning "SSL certificate setup encountered issues"
+        log_info "You can run ./install_ssl.sh manually to set up HTTPS"
+        return 0
+    fi
+}
+
 # Make scripts executable
 make_executable() {
     log_step "Making scripts executable..."
@@ -447,6 +478,12 @@ make_executable() {
     chmod +x start.sh
     chmod +x stop.sh
     chmod +x install.sh
+    
+    # Make install_ssl.sh executable if it exists
+    if [[ -f "install_ssl.sh" ]]; then
+        chmod +x install_ssl.sh
+        log_info "install_ssl.sh made executable"
+    fi
     
     log_success "Scripts made executable"
 }
@@ -496,16 +533,33 @@ show_completion() {
     echo -e "   ${BLUE}./start.sh${NC}"
     echo
     echo -e "3. ${YELLOW}Test the installation:${NC}"
+    echo -e "   ${BLUE}# For HTTPS (self-signed certificate - use -k to ignore SSL verification)${NC}"
+    echo -e "   ${BLUE}curl -X POST https://localhost:8888/health -H \"X-API-Key: sk-demo-key-12345\" -k${NC}"
+    echo
+    echo -e "   ${BLUE}# For HTTP (if SSL_ENABLED=false in .env)${NC}"
     echo -e "   ${BLUE}curl -X POST http://localhost:8888/health -H \"X-API-Key: sk-demo-key-12345\"${NC}"
     echo
     echo -e "4. ${YELLOW}View API documentation:${NC}"
-    echo -e "   ${BLUE}http://localhost:8888/docs${NC}"
+    echo -e "   ${BLUE}https://localhost:8888/docs${NC} (HTTPS - accept self-signed certificate in browser)"
+    echo -e "   ${BLUE}http://localhost:8888/docs${NC} (HTTP - if SSL disabled)"
     echo
     echo -e "${PURPLE}🔧 Configuration files:${NC}"
     echo -e "   • ${BLUE}.env${NC} - Environment configuration"
     echo -e "   • ${BLUE}requirements.txt${NC} - Python dependencies"
-    echo -e "   • ${BLUE}start.sh${NC} - Start script"
-    echo -e "   • ${BLUE}stop.sh${NC} - Stop script"
+    echo
+    echo -e "${PURPLE}📜 Available scripts:${NC}"
+    echo -e "   • ${BLUE}./start.sh${NC} - Start the API server"
+    echo -e "   • ${BLUE}./stop.sh${NC} - Stop the API server"
+    echo -e "   • ${BLUE}./install.sh${NC} - Run full installation"
+    echo -e "   • ${BLUE}./install_ssl.sh${NC} - Setup/regenerate SSL certificates"
+    echo
+    echo -e "${GREEN}🔒 SSL/HTTPS Configuration:${NC}"
+    echo -e "   • ${BLUE}SSL certificates generated${NC} in ./ssl/ directory"
+    echo -e "   • ${BLUE}Certificate:${NC} ./ssl/cert.pem (valid for 365 days)"
+    echo -e "   • ${BLUE}Private key:${NC} ./ssl/key.pem"
+    echo -e "   • ${BLUE}Regenerate:${NC} ./install_ssl.sh --force"
+    echo -e "   • ${YELLOW}Note:${NC} This is a self-signed certificate for development/testing"
+    echo -e "   • ${YELLOW}Production:${NC} Use proper SSL certificates from Let's Encrypt or other CA"
     echo
     echo -e "${YELLOW}⚠️  Troubleshooting:${NC}"
     echo -e "   If you encounter Playwright issues, try:"
@@ -554,6 +608,9 @@ main() {
     
     # Setup environment (only if needed)
     setup_env
+    
+    # Setup SSL certificates (only if needed)
+    setup_ssl_certificates
     
     # Make scripts executable
     make_executable

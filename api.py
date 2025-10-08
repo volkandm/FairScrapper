@@ -1749,5 +1749,31 @@ if __name__ == "__main__":
         api_host = '0.0.0.0'
         logger.info("🌐 Host changed from 127.0.0.1 to 0.0.0.0 for external access")
     
-    logger.info(f"🚀 Starting server on {api_host}:{api_port}")
-    uvicorn.run(app, host=api_host, port=api_port) 
+    # SSL/HTTPS Configuration
+    ssl_enabled = os.getenv('SSL_ENABLED', 'false').lower() == 'true'
+    ssl_keyfile = os.getenv('SSL_KEY_FILE', './ssl/key.pem')
+    ssl_certfile = os.getenv('SSL_CERT_FILE', './ssl/cert.pem')
+    
+    if ssl_enabled:
+        # Check if SSL files exist
+        if os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
+            logger.info(f"🔒 HTTPS enabled - Starting secure server on https://{api_host}:{api_port}")
+            logger.info(f"🔑 Using SSL certificate: {ssl_certfile}")
+            logger.info(f"🔐 Using SSL key: {ssl_keyfile}")
+            uvicorn.run(
+                app, 
+                host=api_host, 
+                port=api_port,
+                ssl_keyfile=ssl_keyfile,
+                ssl_certfile=ssl_certfile
+            )
+        else:
+            logger.error("❌ SSL files not found! Please run install.sh to generate SSL certificates.")
+            logger.error(f"   Missing: {ssl_keyfile if not os.path.exists(ssl_keyfile) else ssl_certfile}")
+            logger.info("🔓 Falling back to HTTP mode")
+            logger.info(f"🚀 Starting server on http://{api_host}:{api_port}")
+            uvicorn.run(app, host=api_host, port=api_port)
+    else:
+        logger.info(f"🔓 HTTPS disabled - Starting HTTP server on http://{api_host}:{api_port}")
+        logger.info("   To enable HTTPS, set SSL_ENABLED=true in .env file")
+        uvicorn.run(app, host=api_host, port=api_port) 

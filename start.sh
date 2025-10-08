@@ -70,6 +70,7 @@ fi
 # Show Host and Port information
 API_HOST=${API_HOST:-"127.0.0.1"}
 API_PORT=${API_PORT:-"8888"}
+SSL_ENABLED=${SSL_ENABLED:-"false"}
 
 # If host is 127.0.0.1, change to 0.0.0.0 for external access
 if [ "$API_HOST" = "127.0.0.1" ]; then
@@ -77,15 +78,40 @@ if [ "$API_HOST" = "127.0.0.1" ]; then
     echo "🌐 Host changed from 127.0.0.1 to 0.0.0.0 for external access"
 fi
 
+# Determine protocol based on SSL_ENABLED
+PROTOCOL="http"
+if [ "$SSL_ENABLED" = "true" ]; then
+    PROTOCOL="https"
+    echo "🔒 SSL/HTTPS enabled"
+    
+    # Check if SSL certificates exist
+    if [ ! -f "./ssl/cert.pem" ] || [ ! -f "./ssl/key.pem" ]; then
+        echo "⚠️  SSL certificates not found!"
+        echo "💡 Please run: ./install.sh"
+        echo "   Or generate manually:"
+        echo "   mkdir -p ssl"
+        echo "   openssl req -x509 -newkey rsa:4096 -nodes -out ssl/cert.pem -keyout ssl/key.pem -days 365"
+        echo ""
+        echo "🔓 Falling back to HTTP mode..."
+        PROTOCOL="http"
+    fi
+fi
+
 echo "🌍 Server settings:"
+echo "   Protocol: $PROTOCOL"
 echo "   Host: $API_HOST"
 echo "   Port: $API_PORT"
 echo ""
 
 # Start API
 echo "🎯 Starting API..."
-echo "📡 API URL: http://$API_HOST:$API_PORT"
-echo "📚 Documentation: http://$API_HOST:$API_PORT/docs"
+echo "📡 API URL: $PROTOCOL://$API_HOST:$API_PORT"
+echo "📚 Documentation: $PROTOCOL://$API_HOST:$API_PORT/docs"
+if [ "$PROTOCOL" = "https" ]; then
+    echo "🔐 HTTPS enabled (self-signed certificate)"
+    echo "   For curl: use -k flag to ignore SSL verification"
+    echo "   For browser: accept the self-signed certificate warning"
+fi
 echo ""
 echo "🛑 Press Ctrl+C to stop"
 echo "=================================="

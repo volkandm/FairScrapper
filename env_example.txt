@@ -4,6 +4,16 @@
 # API Keys (comma-separated for multiple keys)
 VALID_API_KEYS=sk-demo-key-12345,sk-your-key-here
 
+# API Host and Port Configuration
+API_HOST=127.0.0.1
+API_PORT=8888
+
+# SSL/HTTPS Configuration
+# Set to 'true' to enable HTTPS with self-signed certificate
+SSL_ENABLED=true
+SSL_CERT_FILE=./ssl/cert.pem
+SSL_KEY_FILE=./ssl/key.pem
+
 # Proxy Configuration (Optional)
 # Enable/disable proxy usage
 PROXY_ENABLED=true
