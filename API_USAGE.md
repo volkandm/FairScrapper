@@ -49,6 +49,7 @@ Content-Type: application/json
   "debug": false,
   "take_screenshot": false,
   "extract_links": false,
+  "click": ["button.accept", ".modal a.next"],
   "get": {
     "title": "h1",
     "description": "meta[name='description']",
@@ -269,6 +270,121 @@ Images are returned as base64 encoded data URLs:
 - ✅ **URL fallback** - Downloads if browser extraction fails
 - ✅ **Relative URL handling** - Converts to absolute URLs
 
+## 🖱️ Click Operations
+
+The API supports sequential click operations before scraping. This is useful for interacting with pages that require user actions (e.g., accepting cookies, opening modals, navigating through wizard steps).
+
+### **Click Feature**
+
+Click operations are executed **after** the page loads but **before** scraping begins. Each click operation:
+- Waits for the element to be visible
+- Clicks the element
+- Waits at least 100ms
+- Waits for navigation or DOM updates to complete
+- Proceeds to the next click only after the previous one completes
+
+### **Basic Click Usage**
+
+```json
+{
+  "url": "https://example.com",
+  "use_proxy": true,
+  "wait_time": 3,
+  "click": ["button.accept-cookies", ".modal a.next"],
+  "get": {
+    "content": ".main-content"
+  }
+}
+```
+
+### **Click with Navigation**
+
+```json
+{
+  "url": "https://example.com/products",
+  "use_proxy": true,
+  "wait_time": 3,
+  "click": ["a.category-link", "button.filter"],
+  "collect": {
+    "products": {
+      "selector": ".product",
+      "fields": {
+        "name": "h3",
+        "price": ".price"
+      }
+    }
+  }
+}
+```
+
+### **Click Workflow**
+
+1. **Page loads** - Initial URL is navigated
+2. **DOM ready** - Waits for page to be ready
+3. **Click operations** - Executes clicks in sequence:
+   - `click[0]` → wait for completion
+   - `click[1]` → wait for completion
+   - `click[2]` → wait for completion
+4. **Scraping** - Extracts data from the final state
+
+### **Click Timing**
+
+- **Minimum wait**: 100ms after each click
+- **Navigation detection**: Automatically detects if click causes navigation
+- **Network idle**: Waits for network activity to complete after navigation
+- **DOM stabilization**: Waits for DOM updates before next click
+
+### **Example: Multi-Step Form**
+
+```json
+{
+  "url": "https://example.com/form",
+  "use_proxy": true,
+  "wait_time": 3,
+  "click": [
+    "button.start-form",
+    "#step1 button.next",
+    "#step2 button.next",
+    "#step3 button.submit"
+  ],
+  "get": {
+    "result": ".success-message"
+  }
+}
+```
+
+### **Example: Cookie Acceptance + Modal**
+
+```json
+{
+  "url": "https://example.com",
+  "use_proxy": true,
+  "wait_time": 3,
+  "click": [
+    "button#accept-cookies",
+    ".modal button.close",
+    "a.explore-button"
+  ],
+  "collect": {
+    "items": {
+      "selector": ".item",
+      "fields": {
+        "title": "h2",
+        "description": "p"
+      }
+    }
+  }
+}
+```
+
+### **Error Handling**
+
+If a click selector cannot be found:
+- A warning is logged
+- The click is skipped
+- Execution continues with the next click
+- Scraping proceeds with the current page state
+
 ## 🔧 Advanced Selector Syntax
 
 ### **Query Builder Navigation**
@@ -480,6 +596,21 @@ curl -X POST "http://localhost:8888/scrape" \
           "parent_category": ".item<.category>h4"
         }
       }
+    }
+  }'
+
+# Click operations example
+curl -X POST "http://localhost:8888/scrape" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-1234567890abcdef" \
+  -d '{
+    "url": "https://example.com",
+    "use_proxy": true,
+    "wait_time": 3,
+    "click": ["button.accept-cookies", ".modal button.close"],
+    "get": {
+      "title": "h1",
+      "content": ".main-content"
     }
   }'
 ```
@@ -800,6 +931,7 @@ fetch('http://localhost:8888/scrape', {
 | `debug` | boolean | false | Include debug HTML in response |
 | `take_screenshot` | boolean | false | Take screenshot |
 | `extract_links` | boolean | false | Extract all links from page |
+| `click` | array | null | Array of CSS selectors to click in sequence before scraping |
 | `get` | object | null | Single element extractions |
 | `collect` | object | null | Collection extractions |
 
@@ -1024,6 +1156,9 @@ This API provides:
 - ✅ **Complex selectors** - Chain multiple navigation operations
 - ✅ **Size limits** - Configurable image size limits (5MB default)
 - ✅ **Multiple formats** - Support for all image formats (JPEG, PNG, WebP, etc.)
+- ✅ **Click operations** - Sequential click operations before scraping
+- ✅ **Navigation detection** - Automatic detection of page navigation after clicks
+- ✅ **DOM stabilization** - Waits for page updates after each click
 
 ### **Key Features Summary**
 

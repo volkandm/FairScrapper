@@ -76,6 +76,7 @@ class UnifiedScrapeRequest(BaseModel):
     debug: bool = False
     take_screenshot: bool = False
     extract_links: bool = False
+    click: Optional[List[str]] = None  # Array of CSS selectors to click in sequence
     get: Optional[Dict[str, Union[str, Dict[str, Any]]]] = None
     collect: Optional[Dict[str, Dict[str, Any]]] = None
 
@@ -1084,6 +1085,80 @@ async def scrape_website(
         logger.info("🎯 Using unified format")
         return await scrape_unified(request, api_key)
 
+async def execute_clicks(scraper: WebScraper, click_selectors: List[str]):
+    """
+    Execute click operations in sequence
+    
+    Args:
+        scraper: WebScraper instance
+        click_selectors: List of CSS selectors to click in order
+    
+    Returns:
+        True if all clicks succeeded, False otherwise
+    """
+    if not click_selectors:
+        return True
+    
+    logger.info(f"🖱️ Executing {len(click_selectors)} click operations")
+    
+    for i, selector in enumerate(click_selectors, 1):
+        try:
+            logger.info(f"🖱️ [{i}/{len(click_selectors)}] Clicking element: {selector}")
+            
+            # Wait for element to be visible and clickable
+            try:
+                await scraper.page.wait_for_selector(selector, state='visible', timeout=10000)
+                # Additional wait to ensure element is clickable
+                await scraper.page.wait_for_selector(selector, state='attached', timeout=5000)
+                logger.info(f"✅ Element found and ready: {selector}")
+            except Exception as e:
+                logger.warning(f"⚠️ Element not found or not visible: {selector} - {str(e)}")
+                continue  # Skip this click if element not found
+            
+            # Store current URL to detect navigation
+            current_url_before = scraper.page.url
+            
+            # Click the element
+            try:
+                await scraper.page.click(selector, timeout=5000)
+                logger.info(f"✅ Clicked: {selector}")
+            except Exception as click_error:
+                logger.error(f"❌ Failed to click {selector}: {str(click_error)}")
+                continue
+            
+            # Minimum 100ms wait after click
+            await asyncio.sleep(0.1)
+            
+            # Wait for page to stabilize after click
+            try:
+                current_url_after = scraper.page.url
+                if current_url_before != current_url_after:
+                    logger.info(f"🔄 URL changed: {current_url_before} -> {current_url_after}")
+                    # Wait for new page to load
+                    await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
+                    await scraper.page.wait_for_load_state('networkidle', timeout=10000)
+                else:
+                    # No navigation, but wait for any async DOM updates
+                    await asyncio.sleep(0.2)  # Additional wait for async content
+                    try:
+                        await scraper.page.wait_for_load_state('networkidle', timeout=5000)
+                    except:
+                        # If networkidle times out, that's okay - continue anyway
+                        pass
+            except Exception as wait_error:
+                logger.warning(f"⚠️ Wait timeout after click: {str(wait_error)}")
+                # Continue anyway - page might still be usable
+            
+            logger.info(f"✅ Click {i}/{len(click_selectors)} completed successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Error executing click {i}/{len(click_selectors)} on {selector}: {str(e)}")
+            # Continue with next click even if this one failed
+            continue
+    
+    logger.info(f"✅ All click operations completed")
+    return True
+
 async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
     """Simple HTML source code scraping endpoint"""
     request_id = str(uuid.uuid4())[:8]
@@ -1176,6 +1251,14 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             logger.warning(f"⚠️ DOM stabilization timeout: {str(e)}")
 
         logger.info("🪞 DOM ready for HTML extraction")
+
+        # Execute click operations if specified
+        if request.click:
+            logger.info(f"🖱️ Click operations requested: {len(request.click)} clicks")
+            await execute_clicks(scraper, request.click)
+            # Wait a bit more after all clicks are done
+            await asyncio.sleep(0.5)
+            logger.info("✅ All click operations completed, proceeding with scraping")
 
         # Get HTML source code
         html_content = await scraper.page.content()
@@ -1364,6 +1447,14 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
 
         # DOM ready olduğunu log'la
         logger.info("🪞 DOM ready for scraping")
+
+        # Execute click operations if specified
+        if request.click:
+            logger.info(f"🖱️ Click operations requested: {len(request.click)} clicks")
+            await execute_clicks(scraper, request.click)
+            # Wait a bit more after all clicks are done
+            await asyncio.sleep(0.5)
+            logger.info("✅ All click operations completed, proceeding with scraping")
 
         # Get proxy information
         proxy_info = scraper.get_current_proxy_info()
