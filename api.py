@@ -850,6 +850,8 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
     logger.info(f"🔍 Field configs: {field_configs}")
     
     # Build JavaScript code for extraction
+    debug_html_code = 'result["_debug_html"] = element.outerHTML;' if debug else ''
+    
     js_code_parts = []
     for field_name, config in field_configs.items():
         field_selector = config['selector']
@@ -1105,7 +1107,7 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 const result = {{}};
                 
                 // Add HTML for debug if requested
-                {('result["_debug_html"] = element.outerHTML;' if debug else '')}
+                {debug_html_code}
                 
                 // Check if this row has a th element (category)
                 const thElement = element.querySelector('th');
