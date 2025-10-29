@@ -87,6 +87,75 @@ check_python() {
     fi
 }
 
+# Check if python3-venv package is installed (needed for Ubuntu/Debian)
+check_python_venv_package() {
+    log_step "Checking python3-venv package..."
+    
+    if [[ "$OS" != "linux" ]]; then
+        # Not needed for macOS, return success
+        return 0
+    fi
+    
+    if command -v apt-get &> /dev/null; then
+        # Ubuntu/Debian: Check if python3-venv or version-specific package is installed
+        PYTHON_MAJOR_MINOR=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "")
+        
+        if [[ -z "$PYTHON_MAJOR_MINOR" ]]; then
+            log_warning "Could not determine Python version"
+            return 1
+        fi
+        
+        # Check for version-specific package (e.g., python3.12-venv)
+        if dpkg -l | grep -q "^ii.*python${PYTHON_MAJOR_MINOR}-venv" || \
+           dpkg -l | grep -q "^ii.*python3-venv"; then
+            log_success "python3-venv package is installed"
+            return 0
+        else
+            log_warning "python3-venv package not found"
+            return 1
+        fi
+    fi
+    
+    # For other Linux distributions, assume it's available
+    return 0
+}
+
+# Install python3-venv package if needed
+install_python_venv_package() {
+    log_step "Installing python3-venv package..."
+    
+    if [[ "$OS" != "linux" ]]; then
+        return 0
+    fi
+    
+    if command -v apt-get &> /dev/null; then
+        # Get Python version
+        PYTHON_MAJOR_MINOR=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "")
+        
+        if [[ -z "$PYTHON_MAJOR_MINOR" ]]; then
+            log_warning "Could not determine Python version, trying generic python3-venv"
+            PYTHON_MAJOR_MINOR="3"
+        fi
+        
+        log_info "Installing python3-venv for Ubuntu/Debian..."
+        sudo apt-get update
+        
+        # Try version-specific package first (e.g., python3.12-venv)
+        if [[ "$PYTHON_MAJOR_MINOR" != "3" ]] && sudo apt-get install -y "python${PYTHON_MAJOR_MINOR}-venv" 2>/dev/null; then
+            log_success "python${PYTHON_MAJOR_MINOR}-venv installed"
+            return 0
+        elif sudo apt-get install -y python3-venv 2>/dev/null; then
+            log_success "python3-venv installed"
+            return 0
+        else
+            log_warning "Failed to install python3-venv, but continuing..."
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
 # Check if virtual environment exists and is valid
 check_venv() {
     log_step "Checking virtual environment..."
@@ -211,8 +280,35 @@ create_venv() {
         rm -rf "$VENV_NAME"
     fi
     
-    python3 -m venv "$VENV_NAME"
-    log_success "Virtual environment created: $VENV_NAME"
+    # Check if python3-venv package is needed and installed
+    if ! check_python_venv_package; then
+        log_warning "python3-venv package not installed. Installing..."
+        install_python_venv_package
+    fi
+    
+    # Try to create virtual environment
+    if python3 -m venv "$VENV_NAME" 2>/dev/null; then
+        log_success "Virtual environment created: $VENV_NAME"
+        return 0
+    else
+        # If creation failed, try installing python3-venv and retry
+        log_warning "Virtual environment creation failed. Attempting to install python3-venv..."
+        install_python_venv_package
+        
+        # Retry creating virtual environment
+        if python3 -m venv "$VENV_NAME" 2>/dev/null; then
+            log_success "Virtual environment created: $VENV_NAME"
+            return 0
+        else
+            log_error "Failed to create virtual environment. Please install python3-venv manually:"
+            PYTHON_MAJOR_MINOR=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3")
+            if [[ "$PYTHON_MAJOR_MINOR" != "3" ]]; then
+                log_error "  sudo apt-get install python${PYTHON_MAJOR_MINOR}-venv"
+            fi
+            log_error "  or: sudo apt-get install python3-venv"
+            exit 1
+        fi
+    fi
 }
 
 # Activate virtual environment
