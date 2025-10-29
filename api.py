@@ -861,20 +861,97 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 result["{field_name}"] = (element.innerText || element.textContent || "").trim();
             ''')
         elif field_selector.startswith("*"):
-            # Wildcard navigation: * a(href) means any ancestor's a tag
+            # Wildcard navigation: * a(href) means find in any ancestor
+            # Note: In 'collect', wildcard is usually unnecessary since fields are searched within each collection element
+            # Wildcard is mainly useful for 'get' operations when navigating up the DOM tree
             actual_selector = field_selector.replace("*", "").strip()
-            js_code_parts.append(f'''
-                let {field_name}_fieldElement = null;
-                let currentElement = element;
-                while (currentElement && !{field_name}_fieldElement) {{
-                    {field_name}_fieldElement = currentElement.querySelector("{actual_selector}");
-                    if (!{field_name}_fieldElement) {{
-                        currentElement = currentElement.parentElement;
-                    }}
-                }}
-                result["{field_name}"] = {field_name}_fieldElement ? 
-                    {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
-            ''')
+            
+            # Check if selector contains sibling operator (+)
+            if '+' in actual_selector:
+                # Handle sibling selector: .cell+.cell
+                parts = actual_selector.split('+')
+                if len(parts) == 2:
+                    first_part = parts[0].strip()
+                    second_part = parts[1].strip()
+                    
+                    if attr:
+                        js_code_parts.append(f'''
+                            let {field_name}_fieldElement = null;
+                            let currentElement = element;
+                            while (currentElement && !{field_name}_fieldElement) {{
+                                const firstEl = currentElement.querySelector("{first_part}");
+                                if (firstEl && firstEl.nextElementSibling) {{
+                                    const sibling = firstEl.nextElementSibling;
+                                    // Check if sibling matches second selector, if specified
+                                    if ("{second_part}" && sibling.matches && sibling.matches("{second_part}")) {{
+                                        {field_name}_fieldElement = sibling;
+                                    }} else if ("{second_part}" === "") {{
+                                        // If no second selector, just use next sibling
+                                        {field_name}_fieldElement = sibling;
+                                    }}
+                                    if ({field_name}_fieldElement) break;
+                                }}
+                                currentElement = currentElement.parentElement;
+                            }}
+                            result["{field_name}"] = {field_name}_fieldElement ? 
+                                ({field_name}_fieldElement.getAttribute("{attr}") || "") : "";
+                        ''')
+                    else:
+                        js_code_parts.append(f'''
+                            let {field_name}_fieldElement = null;
+                            let currentElement = element;
+                            while (currentElement && !{field_name}_fieldElement) {{
+                                const firstEl = currentElement.querySelector("{first_part}");
+                                if (firstEl && firstEl.nextElementSibling) {{
+                                    const sibling = firstEl.nextElementSibling;
+                                    // Check if sibling matches second selector, if specified
+                                    if ("{second_part}" && sibling.matches && sibling.matches("{second_part}")) {{
+                                        {field_name}_fieldElement = sibling;
+                                    }} else if ("{second_part}" === "") {{
+                                        // If no second selector, just use next sibling
+                                        {field_name}_fieldElement = sibling;
+                                    }}
+                                    if ({field_name}_fieldElement) break;
+                                }}
+                                currentElement = currentElement.parentElement;
+                            }}
+                            result["{field_name}"] = {field_name}_fieldElement ? 
+                                (({field_name}_fieldElement.innerText || {field_name}_fieldElement.textContent || "").trim()) : "";
+                        ''')
+                else:
+                    # Fallback for invalid sibling syntax
+                    js_code_parts.append(f'''
+                        result["{field_name}"] = "";
+                    ''')
+            else:
+                # Normal wildcard navigation without sibling
+                # Search up the DOM tree starting from current element
+                if attr:
+                    js_code_parts.append(f'''
+                        let {field_name}_fieldElement = null;
+                        let currentElement = element;
+                        while (currentElement && !{field_name}_fieldElement) {{
+                            {field_name}_fieldElement = currentElement.querySelector("{actual_selector}");
+                            if (!{field_name}_fieldElement) {{
+                                currentElement = currentElement.parentElement;
+                            }}
+                        }}
+                        result["{field_name}"] = {field_name}_fieldElement ? 
+                            ({field_name}_fieldElement.getAttribute("{attr}") || "") : "";
+                    ''')
+                else:
+                    js_code_parts.append(f'''
+                        let {field_name}_fieldElement = null;
+                        let currentElement = element;
+                        while (currentElement && !{field_name}_fieldElement) {{
+                            {field_name}_fieldElement = currentElement.querySelector("{actual_selector}");
+                            if (!{field_name}_fieldElement) {{
+                                currentElement = currentElement.parentElement;
+                            }}
+                        }}
+                        result["{field_name}"] = {field_name}_fieldElement ? 
+                            (({field_name}_fieldElement.innerText || {field_name}_fieldElement.textContent || "").trim()) : "";
+                    ''')
         elif '<' in field_selector:
             # Handle parent navigation syntax like '.child<div<div>h1'
             parts = field_selector.split('<')
@@ -912,6 +989,43 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 ''')
             else:
                 # Fallback for invalid parent navigation syntax
+                js_code_parts.append(f'''
+                    result["{field_name}"] = "";
+                ''')
+        elif '+' in field_selector and not field_selector.startswith('*'):
+            # Handle sibling selector without wildcard: .cell+.cell
+            # In collect, all selectors are relative to the collection element, so no wildcard needed
+            parts = field_selector.split('+')
+            if len(parts) == 2:
+                first_part = parts[0].strip()
+                second_part = parts[1].strip()
+                
+                if attr:
+                    js_code_parts.append(f'''
+                        const {field_name}_firstEl = element.querySelector("{first_part}");
+                        if ({field_name}_firstEl && {field_name}_firstEl.nextElementSibling) {{
+                            const sibling = {field_name}_firstEl.nextElementSibling;
+                            if (sibling.matches && sibling.matches("{second_part}")) {{
+                                result["{field_name}"] = sibling.getAttribute("{attr}") || "";
+                            }}
+                        }} else {{
+                            result["{field_name}"] = "";
+                        }}
+                    ''')
+                else:
+                    js_code_parts.append(f'''
+                        const {field_name}_firstEl = element.querySelector("{first_part}");
+                        if ({field_name}_firstEl && {field_name}_firstEl.nextElementSibling) {{
+                            const sibling = {field_name}_firstEl.nextElementSibling;
+                            if (sibling.matches && sibling.matches("{second_part}")) {{
+                                result["{field_name}"] = (sibling.innerText || sibling.textContent || "").trim();
+                            }}
+                        }} else {{
+                            result["{field_name}"] = "";
+                        }}
+                    ''')
+            else:
+                # Fallback for invalid sibling syntax
                 js_code_parts.append(f'''
                     result["{field_name}"] = "";
                 ''')

@@ -454,18 +454,45 @@ Extract specific attributes from elements:
 }
 ```
 
-#### **Wildcard Navigation**
-Find attributes in any ancestor:
+#### **Sibling Selector**
+Find next sibling elements:
+```json
+{
+  "collect": {
+    "specs": {
+      "selector": ".row",
+      "fields": {
+        "key": ".cell",
+        "value": ".cell+.cell"
+      }
+    }
+  }
+}
+```
+
+#### **Wildcard Navigation (Usually Unnecessary in Collect)**
+Wildcard (`*`) searches up the DOM tree. In `collect` operations, this is usually unnecessary since fields are searched within each collection element.
+Use wildcard mainly in `get` operations when you need to search in parent elements:
+
 ```json
 {
   "collect": {
     "products": {
       "selector": ".product-item",
       "fields": {
-        "link": "* a(href)",
-        "image": "* img(src)"
+        "link": "a(href)",      // ✅ Simple - searches within .product-item
+        "image": "img(src)"      // ✅ Simple - searches within .product-item
       }
     }
+  }
+}
+```
+
+For `get` operations, wildcard can be useful:
+```json
+{
+  "get": {
+    "category": "* .category-name"  // Searches up the DOM tree
   }
 }
 ```
@@ -741,9 +768,7 @@ data = {
                 "name": "h3",
                 "price": ".price",
                 "link": "a(href)",
-                "image": "img(src)",
-                "parent_category": ".item<.category>h4",
-                "wildcard_link": "* a(href)"
+                "image": "img(src)"
             }
         }
     }
@@ -1152,7 +1177,8 @@ This API provides:
 - ✅ **Image scraping** - Base64 encoded image extraction
 - ✅ **Advanced selectors** - Query builder with parent/child/sibling navigation
 - ✅ **Attribute extraction** - Support for any HTML attribute
-- ✅ **Wildcard navigation** - Find elements in any ancestor
+- ✅ **Wildcard navigation** - Find elements in any ancestor (mainly for `get` operations)
+- ✅ **Sibling selectors** - Find next sibling elements (e.g., `.cell+.cell`)
 - ✅ **Complex selectors** - Chain multiple navigation operations
 - ✅ **Size limits** - Configurable image size limits (5MB default)
 - ✅ **Multiple formats** - Support for all image formats (JPEG, PNG, WebP, etc.)
@@ -1172,14 +1198,15 @@ This API provides:
 #### **Query Builder Navigation**
 - **Parent Navigation (`<`)**: `a.test<.product_pod>h1`
 - **Child Navigation (`>`)**: `.container>div.content>p`
-- **Sibling Navigation (`+`)**: `.current+.next`
-- **Wildcard Navigation (`*`)**: `* a(href)`
+- **Sibling Navigation (`+`)**: `.current+.next` (also works in `collect` fields: `.cell+.cell`)
+- **Wildcard Navigation (`*`)**: `* a(href)` (mainly for `get` operations; usually unnecessary in `collect`)
 - **Complex Chains**: `a.test<.product_pod<section>div.alert>strong`
 
 #### **Attribute Extraction**
 - **Basic**: `a(href)`, `img(src)`, `.element(data-value)`
 - **With Navigation**: `.child<div<div>a(href)`
-- **Wildcard**: `* a(href)`
+- **Sibling**: `.cell+.cell` (in `collect` fields)
+- **Wildcard**: `* a(href)` (mainly for `get` operations)
 
 **API URL**: `http://localhost:8888` (or your domain)
 **Documentation**: `http://localhost:8888/docs` (or your domain)
