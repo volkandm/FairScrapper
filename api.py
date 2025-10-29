@@ -510,7 +510,7 @@ async def execute_query_builder(scraper: WebScraper, selections: List[str], oper
 
 async def unified_parser(scraper: WebScraper, selector: str, operation_type: str = "single", 
                         attr: Optional[str] = None, fields: Optional[Dict[str, Union[str, FieldSelector]]] = None,
-                        include_html: bool = False) -> Union[str, List[str], List[Dict[str, Any]], Dict[str, str]]:
+                        include_html: bool = False, debug: bool = False) -> Union[str, List[str], List[Dict[str, Any]], Dict[str, str]]:
     """
     Unified parser function that handles all types of element extraction
     
@@ -576,7 +576,7 @@ async def unified_parser(scraper: WebScraper, selector: str, operation_type: str
         
         if fields:
             # Extract with multiple fields
-            return await extract_collection_with_fields(scraper, parsed_selector, fields)
+            return await extract_collection_with_fields(scraper, parsed_selector, fields, debug=debug)
         elif attr:
             # Extract attributes from multiple elements
             return await extract_collection_attributes(scraper, parsed_selector, attr)
@@ -828,7 +828,7 @@ async def extract_collection_attributes(scraper: WebScraper, selector: str, attr
         }}
     """)
 
-async def extract_collection_with_fields(scraper: WebScraper, selector: str, fields: Dict[str, Union[str, FieldSelector]]) -> List[Dict[str, Any]]:
+async def extract_collection_with_fields(scraper: WebScraper, selector: str, fields: Dict[str, Union[str, FieldSelector]], debug: bool = False) -> List[Dict[str, Any]]:
     """Extract collection with multiple fields"""
     # Parse fields to extract selectors and attributes
     field_configs = {}
@@ -1003,10 +1003,16 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 if attr:
                     js_code_parts.append(f'''
                         const {field_name}_firstEl = element.querySelector("{first_part}");
-                        if ({field_name}_firstEl && {field_name}_firstEl.nextElementSibling) {{
-                            const sibling = {field_name}_firstEl.nextElementSibling;
-                            if (sibling.matches && sibling.matches("{second_part}")) {{
+                        if ({field_name}_firstEl) {{
+                            let sibling = {field_name}_firstEl.nextElementSibling;
+                            // Find next sibling that matches the second selector
+                            while (sibling && (!sibling.matches || !sibling.matches("{second_part}"))) {{
+                                sibling = sibling.nextElementSibling;
+                            }}
+                            if (sibling) {{
                                 result["{field_name}"] = sibling.getAttribute("{attr}") || "";
+                            }} else {{
+                                result["{field_name}"] = "";
                             }}
                         }} else {{
                             result["{field_name}"] = "";
@@ -1015,10 +1021,16 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 else:
                     js_code_parts.append(f'''
                         const {field_name}_firstEl = element.querySelector("{first_part}");
-                        if ({field_name}_firstEl && {field_name}_firstEl.nextElementSibling) {{
-                            const sibling = {field_name}_firstEl.nextElementSibling;
-                            if (sibling.matches && sibling.matches("{second_part}")) {{
+                        if ({field_name}_firstEl) {{
+                            let sibling = {field_name}_firstEl.nextElementSibling;
+                            // Find next sibling that matches the second selector
+                            while (sibling && (!sibling.matches || !sibling.matches("{second_part}"))) {{
+                                sibling = sibling.nextElementSibling;
+                            }}
+                            if (sibling) {{
                                 result["{field_name}"] = (sibling.innerText || sibling.textContent || "").trim();
+                            }} else {{
+                                result["{field_name}"] = "";
                             }}
                         }} else {{
                             result["{field_name}"] = "";
@@ -1083,12 +1095,17 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
         () => {{
             const elements = document.querySelectorAll('{selector}');
             console.log('Found elements:', elements.length);
+            console.log('Selector:', '{selector}');
             let currentCategory = '';
             const results = [];
             
             for (let i = 0; i < elements.length; i++) {{
                 const element = elements[i];
+                console.log('Processing element', i, element);
                 const result = {{}};
+                
+                // Add HTML for debug if requested
+                {('result["_debug_html"] = element.outerHTML;' if debug else '')}
                 
                 // Check if this row has a th element (category)
                 const thElement = element.querySelector('th');
@@ -1097,10 +1114,11 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 }}
                 
                 {js_code}
-                console.log('Result:', result);
+                console.log('Result for element', i, ':', result);
                 results.push(result);
             }}
             
+            console.log('Final results:', results);
             return results;
         }}
     """)
@@ -1611,7 +1629,7 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
                     fields = config.get("fields", {})
                     
                     # Use unified parser for collection extraction
-                    items = await unified_parser(scraper, selector, operation_type="collection", fields=fields)
+                    items = await unified_parser(scraper, selector, operation_type="collection", fields=fields, debug=request.debug)
                     
                     response_data["collect"][key] = items
                     logger.info(f"✅ Extracted '{key}': {len(items)} items")
