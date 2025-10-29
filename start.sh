@@ -44,14 +44,39 @@ fi
 
 # Check Playwright browsers
 echo "🌐 Checking Playwright browsers..."
-python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.chromium.launch(); p.stop()" 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo "⚠️  Playwright browsers missing, installing..."
-    if [ $DEBUG -eq 1 ]; then
-        playwright install
+PLAYWRIGHT_CACHE_FILE=".playwright_installed"
+
+# Check if we've already verified Playwright installation recently (within last 24 hours)
+if [ -f "$PLAYWRIGHT_CACHE_FILE" ]; then
+    CACHE_AGE=$(($(date +%s) - $(stat -f %m "$PLAYWRIGHT_CACHE_FILE" 2>/dev/null || stat -c %Y "$PLAYWRIGHT_CACHE_FILE" 2>/dev/null || echo 0)))
+    if [ $CACHE_AGE -lt 86400 ]; then  # 24 hours = 86400 seconds
+        echo "✅ Playwright browsers already installed (cached)"
     else
-        # Suppress install output in non-debug mode
-        playwright install >/dev/null 2>&1
+        # Cache expired, check again
+        rm -f "$PLAYWRIGHT_CACHE_FILE"
+    fi
+fi
+
+# If no cache file, check Playwright installation
+if [ ! -f "$PLAYWRIGHT_CACHE_FILE" ]; then
+    if playwright --version >/dev/null 2>&1 && python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.chromium.executable_path; p.stop()" >/dev/null 2>&1; then
+        echo "✅ Playwright browsers already installed"
+        touch "$PLAYWRIGHT_CACHE_FILE"
+    else
+        echo "⚠️  Playwright browsers missing, installing..."
+        if [ $DEBUG -eq 1 ]; then
+            playwright install
+        else
+            # Suppress install output in non-debug mode
+            playwright install >/dev/null 2>&1
+        fi
+        # Create cache file after successful installation
+        if playwright --version >/dev/null 2>&1 && python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.chromium.executable_path; p.stop()" >/dev/null 2>&1; then
+            touch "$PLAYWRIGHT_CACHE_FILE"
+            echo "✅ Playwright browsers installed successfully"
+        else
+            echo "❌ Playwright installation failed"
+        fi
     fi
 fi
 

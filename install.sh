@@ -491,6 +491,7 @@ install_playwright() {
     fi
     
     # Install Playwright browsers
+    log_info "Installing Playwright browsers (this may take a few minutes)..."
     playwright install
     
     # Install system dependencies for Playwright
@@ -502,6 +503,8 @@ install_playwright() {
         log_info "You may need to install system dependencies manually if you encounter issues"
     fi
     
+    # Create cache file to avoid repeated checks
+    touch ".playwright_installed"
     log_success "Playwright browsers installed"
 }
 
