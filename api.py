@@ -539,15 +539,10 @@ async def unified_parser(scraper: WebScraper, selector: str, operation_type: str
         selections, operators = parse_query_builder_selector(parsed_selector)
         return await execute_query_builder(scraper, selections, operators, operation_type, attr)
     
-    # Special handling for img elements without src attribute - return binary data
+    # Special handling for img elements without attr - return binary data
     logger.info(f"🔍 Checking img detection: selector='{parsed_selector}', ends_with_img={parsed_selector.lower().strip().endswith('img')}, attr='{attr}'")
     if parsed_selector.lower().strip().endswith('img') and not attr:
-        logger.info("🖼️ Image element detected without src attribute - extracting binary data")
-        return await extract_single_image_binary(scraper, parsed_selector)
-    
-    # Special handling for img(src) - return binary data instead of just URL
-    if parsed_selector.lower().strip().endswith('img') and attr == 'src':
-        logger.info("🖼️ Image src attribute detected - extracting binary data")
+        logger.info("🖼️ Image element detected without attribute - extracting binary data")
         return await extract_single_image_binary(scraper, parsed_selector)
     
     # Single element extraction
@@ -564,14 +559,9 @@ async def unified_parser(scraper: WebScraper, selector: str, operation_type: str
     
     # Collection extraction
     elif operation_type == "collection":
-        # Special handling for img elements in collection - return binary data
+        # Special handling for img elements in collection without attr - return binary data
         if parsed_selector.lower().strip().endswith('img') and not attr:
-            logger.info("🖼️ Image collection detected without src attribute - extracting binary data")
-            return await extract_collection_images_binary(scraper, parsed_selector)
-        
-        # Special handling for img(src) in collection - return binary data instead of just URLs
-        if parsed_selector.lower().strip().endswith('img') and attr == 'src':
-            logger.info("🖼️ Image src collection detected - extracting binary data")
+            logger.info("🖼️ Image collection detected without attribute - extracting binary data")
             return await extract_collection_images_binary(scraper, parsed_selector)
         
         if fields:
@@ -1055,13 +1045,6 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 js_code_parts.append(f'''
                     result["{field_name}"] = element.getAttribute("href") || "";
                 ''')
-            elif field_selector.lower() == "img" and attr == "src":
-                # Special case for img src - we'll handle this separately in Python
-                js_code_parts.append(f'''
-                    const {field_name}_fieldElement = element.querySelector("{field_selector}");
-                    result["{field_name}_url"] = {field_name}_fieldElement ? 
-                        {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
-                ''')
             else:
                 js_code_parts.append(f'''
                     const {field_name}_fieldElement = element.querySelector("{field_selector}");
@@ -1080,6 +1063,13 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                     }} else {{
                         result["{field_name}"] = currentCategory;
                     }}
+                ''')
+            elif field_selector.lower() == "img":
+                # Special case for img without attr - extract src URL for binary conversion
+                js_code_parts.append(f'''
+                    const {field_name}_fieldElement = element.querySelector("{field_selector}");
+                    result["{field_name}_url"] = {field_name}_fieldElement ? 
+                        ({field_name}_fieldElement.getAttribute("src") || "") : "";
                 ''')
             else:
                 js_code_parts.append(f'''
