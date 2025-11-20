@@ -167,24 +167,70 @@ async def verify_api_key(x_api_key: str = Header(None)):
 scraper_pool = []
 
 async def get_scraper():
-    """Get scraper from pool or create new one"""
+    """Get scraper from pool or create new one with robust error handling"""
     import random
     
-    # Create new scraper for IP rotation
-    scraper = WebScraper()
-    
-    # Set random proxy index for rotation
-    if scraper.proxy_list:
-        scraper.current_proxy_index = random.randint(0, len(scraper.proxy_list) - 1)
-        logger.info(f"🎲 Random proxy selected: index {scraper.current_proxy_index}")
-    
-    await scraper.setup_browser()
-    return scraper
+    scraper = None
+    try:
+        # Create new scraper for IP rotation
+        scraper = WebScraper()
+        
+        # Set random proxy index for rotation
+        if scraper.proxy_list:
+            scraper.current_proxy_index = random.randint(0, len(scraper.proxy_list) - 1)
+            logger.info(f"🎲 Random proxy selected: index {scraper.current_proxy_index}")
+        
+        await scraper.setup_browser()
+        return scraper
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"❌ Error creating scraper: {e}")
+        # Cleanup if scraper was created but setup failed
+        if scraper:
+            try:
+                await cleanup_scraper(scraper)
+            except:
+                pass
+        raise
 
 async def cleanup_scraper(scraper: WebScraper):
-    """Cleanup scraper resources"""
-    await scraper.close()
-    # Don't remove from pool since we're not using pool anymore
+    """Cleanup scraper resources with robust error handling"""
+    if not scraper:
+        return
+    
+    try:
+        # Set a maximum timeout for cleanup (30 seconds)
+        await asyncio.wait_for(scraper.close(), timeout=30.0)
+    except asyncio.TimeoutError:
+        logger.error("❌ Cleanup timeout - browser resources may not be fully released")
+        # Force cleanup by setting resources to None
+        try:
+            scraper.page = None
+            scraper.context = None
+            scraper.browser = None
+            if hasattr(scraper, 'playwright'):
+                scraper.playwright = None
+        except:
+            pass
+    except Exception as e:
+        error_msg = str(e)
+        # EPIPE errors are expected when browser process already terminated
+        if 'EPIPE' not in error_msg and 'broken pipe' not in error_msg.lower():
+            logger.error(f"❌ Cleanup error: {e}")
+        else:
+            logger.debug(f"Cleanup EPIPE error (expected): {e}")
+        # Ensure resources are cleaned up even on error
+        try:
+            scraper.page = None
+            scraper.context = None
+            scraper.browser = None
+            if hasattr(scraper, 'playwright'):
+                scraper.playwright = None
+        except:
+            pass
+    finally:
+        # Don't remove from pool since we're not using pool anymore
+        pass
 
 @app.post("/")
 async def root():
@@ -1211,7 +1257,7 @@ async def scrape_website(
 
 async def execute_clicks(scraper: WebScraper, click_selectors: List[str]):
     """
-    Execute click operations in sequence
+    Execute click operations in sequence with robust error handling
     
     Args:
         scraper: WebScraper instance
@@ -1220,7 +1266,7 @@ async def execute_clicks(scraper: WebScraper, click_selectors: List[str]):
     Returns:
         True if all clicks succeeded, False otherwise
     """
-    if not click_selectors:
+    if not click_selectors or not scraper or not scraper.page:
         return True
     
     logger.info(f"🖱️ Executing {len(click_selectors)} click operations")
@@ -1229,6 +1275,15 @@ async def execute_clicks(scraper: WebScraper, click_selectors: List[str]):
         try:
             logger.info(f"🖱️ [{i}/{len(click_selectors)}] Clicking element: {selector}")
             
+            # Check if page is still valid
+            try:
+                if scraper.page.is_closed():
+                    logger.error(f"❌ Page is closed, cannot execute clicks")
+                    return False
+            except:
+                logger.error(f"❌ Page is no longer valid, cannot execute clicks")
+                return False
+            
             # Wait for element to be visible and clickable
             try:
                 await scraper.page.wait_for_selector(selector, state='visible', timeout=10000)
@@ -1236,18 +1291,35 @@ async def execute_clicks(scraper: WebScraper, click_selectors: List[str]):
                 await scraper.page.wait_for_selector(selector, state='attached', timeout=5000)
                 logger.info(f"✅ Element found and ready: {selector}")
             except Exception as e:
-                logger.warning(f"⚠️ Element not found or not visible: {selector} - {str(e)}")
+                error_msg = str(e)
+                # EPIPE and browser closed errors are critical
+                if 'EPIPE' in error_msg or 'browser' in error_msg.lower() and 'closed' in error_msg.lower():
+                    logger.error(f"❌ Browser connection lost: {error_msg}")
+                    return False
+                logger.warning(f"⚠️ Element not found or not visible: {selector} - {error_msg}")
                 continue  # Skip this click if element not found
             
             # Store current URL to detect navigation
-            current_url_before = scraper.page.url
+            try:
+                current_url_before = scraper.page.url
+            except Exception as e:
+                error_msg = str(e)
+                if 'EPIPE' in error_msg:
+                    logger.error(f"❌ Browser connection lost during click: {error_msg}")
+                    return False
+                logger.warning(f"⚠️ Cannot get current URL: {error_msg}")
+                continue
             
             # Click the element
             try:
                 await scraper.page.click(selector, timeout=5000)
                 logger.info(f"✅ Clicked: {selector}")
             except Exception as click_error:
-                logger.error(f"❌ Failed to click {selector}: {str(click_error)}")
+                error_msg = str(click_error)
+                if 'EPIPE' in error_msg or 'browser' in error_msg.lower() and 'closed' in error_msg.lower():
+                    logger.error(f"❌ Browser connection lost during click: {error_msg}")
+                    return False
+                logger.error(f"❌ Failed to click {selector}: {error_msg}")
                 continue
             
             # Minimum 100ms wait after click
@@ -1270,13 +1342,21 @@ async def execute_clicks(scraper: WebScraper, click_selectors: List[str]):
                         # If networkidle times out, that's okay - continue anyway
                         pass
             except Exception as wait_error:
-                logger.warning(f"⚠️ Wait timeout after click: {str(wait_error)}")
+                error_msg = str(wait_error)
+                if 'EPIPE' in error_msg:
+                    logger.error(f"❌ Browser connection lost during wait: {error_msg}")
+                    return False
+                logger.warning(f"⚠️ Wait timeout after click: {error_msg}")
                 # Continue anyway - page might still be usable
             
             logger.info(f"✅ Click {i}/{len(click_selectors)} completed successfully")
             
         except Exception as e:
-            logger.error(f"❌ Error executing click {i}/{len(click_selectors)} on {selector}: {str(e)}")
+            error_msg = str(e)
+            if 'EPIPE' in error_msg:
+                logger.error(f"❌ Browser connection lost: {error_msg}")
+                return False
+            logger.error(f"❌ Error executing click {i}/{len(click_selectors)} on {selector}: {error_msg}")
             # Continue with next click even if this one failed
             continue
     
@@ -1441,19 +1521,21 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
         error_msg = f"HTML source extraction failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         
-        # Return scraper to pool on error
-        try:
-            await cleanup_scraper(scraper)
-        except:
-            pass
+        # Return scraper to pool on error - ensure cleanup even if scraper creation failed
+        scraper_var = locals().get('scraper')
+        if scraper_var:
+            try:
+                await cleanup_scraper(scraper_var)
+            except Exception as cleanup_error:
+                logger.error(f"❌ Cleanup failed in exception handler: {cleanup_error}")
         
         # Get proxy info even on error
         proxy_info = None
-        try:
-            if 'scraper' in locals():
-                proxy_info = scraper.get_current_proxy_info()
-        except:
-            pass
+        if scraper_var:
+            try:
+                proxy_info = scraper_var.get_current_proxy_info()
+            except:
+                pass
         
         error_response = {
             "success": False,
@@ -1690,11 +1772,12 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
         
         # Get proxy info even on error
         proxy_info = None
-        try:
-            if 'scraper' in locals():
-                proxy_info = scraper.get_current_proxy_info()
-        except:
-            pass
+        scraper_var = locals().get('scraper')
+        if scraper_var:
+            try:
+                proxy_info = scraper_var.get_current_proxy_info()
+            except:
+                pass
         
         error_response = {
             "success": False,

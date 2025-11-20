@@ -333,19 +333,112 @@ class WebScraper:
             logger.error(f"Error taking screenshot: {e}")
     
     async def close(self):
-        """Close browser and cleanup"""
-        try:
-            if self.page:
-                await self.page.close()
-            if self.context:
-                await self.context.close()
-            if self.browser:
-                await self.browser.close()
-            if hasattr(self, 'playwright'):
-                await self.playwright.stop()
+        """Close browser and cleanup with robust error handling"""
+        errors = []
+        
+        # Track if browser was already disconnected to skip playwright cleanup
+        browser_already_disconnected = False
+        
+        # Close page with timeout
+        if self.page:
+            try:
+                # Check if page is already closed to avoid errors
+                try:
+                    if self.page.is_closed():
+                        logger.debug("Page already closed")
+                    else:
+                        await asyncio.wait_for(self.page.close(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Page close timeout, forcing close")
+                    try:
+                        if not self.page.is_closed():
+                            await self.page.close()
+                    except:
+                        pass
+                except:
+                    pass  # If is_closed() fails, try to close anyway
+            except Exception as e:
+                error_msg = str(e)
+                # EPIPE errors are expected when browser process already terminated
+                if 'EPIPE' not in error_msg and 'broken pipe' not in error_msg.lower():
+                    errors.append(f"Page close error: {e}")
+                    logger.error(f"Error closing page: {e}")
+            finally:
+                self.page = None
+        
+        # Close context with timeout
+        if self.context:
+            try:
+                await asyncio.wait_for(self.context.close(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Context close timeout, forcing close")
+                try:
+                    # Try to close anyway - Playwright will handle if already closed
+                    await self.context.close()
+                except:
+                    pass
+            except Exception as e:
+                error_msg = str(e)
+                if 'EPIPE' not in error_msg and 'broken pipe' not in error_msg.lower():
+                    errors.append(f"Context close error: {e}")
+                    logger.error(f"Error closing context: {e}")
+            finally:
+                self.context = None
+        
+        # Close browser with timeout
+        if self.browser:
+            try:
+                # Check if browser is still connected before closing
+                try:
+                    if not self.browser.is_connected():
+                        logger.debug("Browser already disconnected")
+                        browser_already_disconnected = True
+                    else:
+                        await asyncio.wait_for(self.browser.close(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Browser close timeout, forcing close")
+                    try:
+                        if self.browser.is_connected():
+                            await self.browser.close()
+                    except:
+                        pass
+                except:
+                    pass  # If is_connected() fails, try to close anyway
+            except Exception as e:
+                error_msg = str(e)
+                if 'EPIPE' not in error_msg and 'broken pipe' not in error_msg.lower():
+                    errors.append(f"Browser close error: {e}")
+                    logger.error(f"Error closing browser: {e}")
+            finally:
+                self.browser = None
+        
+        # Stop playwright with timeout (always try, even if browser was disconnected)
+        if hasattr(self, 'playwright') and self.playwright:
+            try:
+                if not browser_already_disconnected:
+                    await asyncio.wait_for(self.playwright.stop(), timeout=5.0)
+                else:
+                    # Browser already disconnected, but still try to stop playwright gracefully
+                    try:
+                        await asyncio.wait_for(self.playwright.stop(), timeout=2.0)
+                    except:
+                        pass  # Ignore errors if browser was already disconnected
+            except asyncio.TimeoutError:
+                logger.warning("Playwright stop timeout")
+            except Exception as e:
+                error_msg = str(e)
+                # EPIPE errors are expected when browser process already terminated
+                if 'EPIPE' not in error_msg and 'broken pipe' not in error_msg.lower():
+                    errors.append(f"Playwright stop error: {e}")
+                    logger.error(f"Error stopping playwright: {e}")
+            finally:
+                if hasattr(self, 'playwright'):
+                    self.playwright = None
+        
+        if errors:
+            logger.warning(f"Browser cleanup completed with {len(errors)} non-critical errors")
+        else:
             logger.info("Browser closed successfully")
-        except Exception as e:
-            logger.error(f"Error closing browser: {e}")
 
 async def main():
     """Example usage of the scraper"""
