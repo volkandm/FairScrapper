@@ -1452,7 +1452,8 @@ async def scrape_usage():
 @app.post("/scrape")
 async def scrape_website(
     request: UnifiedScrapeRequest,
-    api_key: str = Depends(verify_api_key)
+    api_key: str = Depends(verify_api_key),
+    http_request: Request = None,
 ):
     """
     Main scraping endpoint that supports multiple modes:
@@ -1488,11 +1489,11 @@ async def scrape_website(
         if not request.get and not request.collect:
             # Simple HTML source code request
             logger.info("🎯 Simple HTML source request")
-            return await scrape_html_source(request, api_key)
+            return await scrape_html_source(request, api_key, http_request)
         else:
             # Unified scraping request
             logger.info("🎯 Using unified format")
-            return await scrape_unified(request, api_key)
+            return await scrape_unified(request, api_key, http_request)
     except Exception as e:
         logger.exception("❌ Scrape endpoint error")
         return JSONResponse(
