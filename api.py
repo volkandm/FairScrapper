@@ -163,6 +163,49 @@ async def _test_proxy_connectivity(scraper: WebScraper) -> Dict[str, Any]:
     return result
 
 
+async def _wait_for_page_ready(scraper: WebScraper, label: str = "") -> None:
+    """
+    Wait for page to be "fully" ready:
+    - domcontentloaded
+    - networkidle
+    - document.readyState === 'complete'
+    Adds detailed logs so we can see what it is doing.
+    """
+    if not scraper or not getattr(scraper, "page", None):
+        return
+
+    page = scraper.page
+    ctx = f" ({label})" if label else ""
+
+    # domcontentloaded
+    try:
+        logger.info(f"⏳ Page ready wait{ctx}: domcontentloaded")
+        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+    except Exception as e:
+        msg = f"DOM content loaded wait failed{ctx}: {e}"
+        logger.warning(f"⚠️ {msg}")
+
+    # networkidle
+    try:
+        logger.info(f"⏳ Page ready wait{ctx}: networkidle")
+        await page.wait_for_load_state("networkidle", timeout=20000)
+    except Exception as e:
+        msg = f"Network idle wait failed{ctx}: {e}"
+        logger.warning(f"⚠️ {msg}")
+
+    # readyState === 'complete'
+    try:
+        logger.info(f"⏳ Page ready wait{ctx}: document.readyState === 'complete'")
+        await page.wait_for_function("document.readyState === 'complete'", timeout=15000)
+    except Exception as e:
+        msg = f"ReadyState('complete') wait failed{ctx}: {e}"
+        logger.warning(f"⚠️ {msg}")
+
+    # Small extra delay for late JS
+    await asyncio.sleep(0.5)
+    logger.info(f"✅ Page ready wait finished{ctx}")
+
+
 async def _save_debug_html(scraper: WebScraper, html_path: str) -> Optional[str]:
     """Save current page HTML to html_path (e.g. debug/abc123_00_initial.html). Same base name as screenshot."""
     if not scraper or not scraper.page:
@@ -1777,31 +1820,18 @@ async def execute_clicks(
                             errors.append(msg)
                         continue
             
-            # Brief wait so DOM/JS updates (e.g. revealed content) after click are applied
-            await asyncio.sleep(0.3)
-            
-            # Wait for page to stabilize after click
+            # Wait for page to stabilize after click (navigation or in-place changes)
             try:
                 current_url_after = scraper.page.url
                 if current_url_before != current_url_after:
                     logger.info(f"🔄 URL changed: {current_url_before} -> {current_url_after}")
-                    # Wait for new page to load
-                    await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
-                    await scraper.page.wait_for_load_state('networkidle', timeout=10000)
-                else:
-                    # No navigation, but wait for any async DOM updates
-                    await asyncio.sleep(0.2)  # Additional wait for async content
-                    try:
-                        await scraper.page.wait_for_load_state('networkidle', timeout=5000)
-                    except:
-                        # If networkidle times out, that's okay - continue anyway
-                        pass
+                await _wait_for_page_ready(scraper, label=f"after click {click_index}")
             except Exception as wait_error:
                 error_msg = str(wait_error)
                 if 'EPIPE' in error_msg:
                     logger.error(f"❌ Browser connection lost during wait: {error_msg}")
                     return False
-                msg = f"Wait timeout after click: {error_msg}"
+                msg = f"Wait timeout after click {click_index}: {error_msg}"
                 logger.warning(f"⚠️ {msg}")
                 if errors is not None:
                     errors.append(msg)
@@ -1907,43 +1937,36 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
             logger.info(f"⏳ Waiting for element with timeout: {request.element_timeout}s")
             await asyncio.sleep(request.element_timeout)
 
-        # Wait for page to load
+        # Wait for page to fully stabilize (even if wait_time not provided)
         try:
-            await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
+            await _wait_for_page_ready(scraper, label="initial")
         except Exception as e:
-            msg = f"DOM content loaded timeout: {str(e)}"
+            msg = f"Page ready wait failed (initial): {e}"
             logger.warning(f"⚠️ {msg}")
             errors.append(msg)
-            # Check if page is accessible
-            try:
-                current_url = scraper.page.url
-                if "about:blank" in current_url or not current_url:
-                    error_msg = f"Page failed to load: {str(e)}"
-                    logger.error(f"❌ {error_msg}")
-                    await cleanup_scraper(scraper)
-                    return {
-                        "success": False,
-                        "url": str(request.url),
-                        "error": error_msg,
-                        "load_time": time.time() - start_time,
-                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None,
-                    }
-            except Exception:
-                pass
 
+        # Extra explicit wait_time from request (optional)
         if request.wait_time:
-            logger.info(f"⏳ Waiting {request.wait_time} seconds")
+            logger.info(f"⏳ Additional explicit wait_time: {request.wait_time} seconds")
             await asyncio.sleep(request.wait_time)
 
-        # Wait for JavaScript to complete
+        # Check if page is accessible (not about:blank)
         try:
-            await scraper.page.wait_for_function("document.readyState === 'complete'", timeout=10000)
-            await asyncio.sleep(1)
-        except Exception as e:
-            msg = f"DOM stabilization timeout: {str(e)}"
-            logger.warning(f"⚠️ {msg}")
-            errors.append(msg)
+            current_url = scraper.page.url
+            if "about:blank" in current_url or not current_url:
+                error_msg = "Page failed to load: still about:blank after waits"
+                logger.error(f"❌ {error_msg}")
+                await cleanup_scraper(scraper)
+                return {
+                    "success": False,
+                    "url": str(request.url),
+                    "error": error_msg,
+                    "load_time": time.time() - start_time,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None,
+                }
+        except Exception:
+            pass
 
         logger.info("🪞 DOM ready for HTML extraction")
 
@@ -2158,42 +2181,36 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             logger.info(f"⏳ Waiting for element with timeout: {request.element_timeout}s")
             await asyncio.sleep(request.element_timeout)
 
-        # Wait for page to load and optional wait_time
+        # Wait for page to fully stabilize (even if wait_time not provided)
         try:
-            await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
+            await _wait_for_page_ready(scraper, label="initial")
         except Exception as e:
-            msg = f"DOM content loaded timeout: {str(e)}"
+            msg = f"Page ready wait failed (initial): {e}"
             logger.warning(f"⚠️ {msg}")
             errors.append(msg)
-            try:
-                current_url = scraper.page.url
-                if "about:blank" in current_url or not current_url:
-                    error_msg = f"Page failed to load: {str(e)}"
-                    logger.error(f"❌ {error_msg}")
-                    await cleanup_scraper(scraper)
-                    return {
-                        "success": False,
-                        "url": str(request.url),
-                        "error": error_msg,
-                        "load_time": time.time() - start_time,
-                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None,
-                    }
-            except Exception:
-                pass
-        
+
+        # Extra explicit wait_time from request (optional)
         if request.wait_time:
-            logger.info(f"⏳ Waiting {request.wait_time} seconds")
+            logger.info(f"⏳ Additional explicit wait_time: {request.wait_time} seconds")
             await asyncio.sleep(request.wait_time)
 
-        # JavaScript'in tam çalışmasını bekle ve sonra HTML'i al
+        # Check if page is accessible (not about:blank)
         try:
-            await scraper.page.wait_for_function("document.readyState === 'complete'", timeout=10000)
-            await asyncio.sleep(1)
-        except Exception as e:
-            msg = f"DOM stabilizasyonu bekleme hatası: {str(e)}"
-            logger.warning(f"⚠️ {msg}")
-            errors.append(msg)
+            current_url = scraper.page.url
+            if "about:blank" in current_url or not current_url:
+                error_msg = "Page failed to load: still about:blank after waits"
+                logger.error(f"❌ {error_msg}")
+                await cleanup_scraper(scraper)
+                return {
+                    "success": False,
+                    "url": str(request.url),
+                    "error": error_msg,
+                    "load_time": time.time() - start_time,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None,
+                }
+        except Exception:
+            pass
 
         logger.info("🪞 DOM ready for scraping")
 
