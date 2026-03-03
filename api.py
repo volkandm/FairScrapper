@@ -255,6 +255,35 @@ async def _attach_debug_video(scraper: WebScraper, request_id: str) -> Optional[
         return None
 
 
+async def _record_debug_frames(scraper: WebScraper, request_id: str, stop_event: asyncio.Event, fps: int = 10) -> None:
+    """
+    Background task: capture frames at given fps while stop_event is not set.
+    Frames are saved as PNGs: debug/{request_id}_frame_XXXX.png
+    """
+    if not scraper or not getattr(scraper, "page", None):
+        return
+
+    interval = 1.0 / max(fps, 1)
+    frame_index = 0
+
+    logger.info(f"🎥 Starting debug frame recording at {fps} fps")
+
+    try:
+        while not stop_event.is_set():
+            filename = os.path.join(DEBUG_DIR, f"{request_id}_frame_{frame_index:04d}.png")
+            await _save_debug_frame(scraper, filename)
+            frame_index += 1
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                # Timeout is expected; continue to next frame
+                continue
+    except Exception as e:
+        logger.warning(f"⚠️ Debug frame recorder error: {e}")
+    finally:
+        logger.info(f"🎥 Debug frame recording stopped after {frame_index} frames")
+
+
 async def _save_debug_html(scraper: WebScraper, html_path: str) -> Optional[str]:
     """Save current page HTML to html_path (e.g. debug/abc123_00_initial.html). Same base name as screenshot."""
     if not scraper or not scraper.page:
@@ -339,6 +368,22 @@ async def _save_debug_screenshot(scraper: WebScraper, filepath: str) -> Optional
         return filepath
     except Exception as e:
         logger.error(f"Debug screenshot failed: {e}")
+        return None
+
+
+async def _save_debug_frame(scraper: WebScraper, filepath: str) -> Optional[str]:
+    """
+    Lightweight frame capture for debug-video (PNG only, no HTML, no grid).
+    Used for generating a sequence of frames that can be turned into a video.
+    """
+    if not scraper or not scraper.page:
+        return None
+    try:
+        _ensure_debug_dir()
+        await scraper.page.screenshot(path=filepath)
+        return filepath
+    except Exception as e:
+        logger.warning(f"Debug frame save failed: {e}")
         return None
 
 # Lifespan event handler
@@ -1921,6 +1966,8 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
     links = None
     errors: List[str] = []
     debug_files: List[str] = []
+    frame_stop_event: Optional[asyncio.Event] = None
+    frame_task: Optional[asyncio.Task] = None
 
     try:
         logger.info(f"📄 HTML source request {request_id}: {request.url}")
@@ -1928,6 +1975,16 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
         # Get scraper instance (per-domain session + sticky proxy when available)
         domain = _get_domain_from_url(str(request.url))
         scraper = await get_scraper(domain=domain)
+
+        # Start debug frame recorder (10 fps) if debug=true
+        if request.debug:
+            try:
+                frame_stop_event = asyncio.Event()
+                frame_task = asyncio.create_task(
+                    _record_debug_frames(scraper, request_id, frame_stop_event, fps=10)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Could not start debug frame recorder: {e}")
         
         # Configure proxy
         if request.use_proxy:
@@ -2052,11 +2109,6 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
             if final_path:
                 debug_files.append(final_path)
 
-            # Attach debug video if available
-            video_path = await _attach_debug_video(scraper, request_id)
-            if video_path:
-                debug_files.append(video_path)
-
         # Get proxy information
         proxy_info = scraper.get_current_proxy_info()
 
@@ -2105,6 +2157,14 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
         # Store domain session on successful page load
         await _store_domain_session(scraper, str(request.url))
 
+        # Stop debug frame recorder before cleanup
+        if frame_stop_event and frame_task:
+            try:
+                frame_stop_event.set()
+                await frame_task
+            except Exception:
+                pass
+
         # Return scraper to pool
         await cleanup_scraper(scraper)
         
@@ -2134,6 +2194,14 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
         error_msg = f"HTML source extraction failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         
+        # Stop debug frame recorder on error
+        if frame_stop_event and frame_task:
+            try:
+                frame_stop_event.set()
+                await frame_task
+            except Exception:
+                pass
+
         # Return scraper to pool on error - ensure cleanup even if scraper creation failed
         scraper_var = locals().get('scraper')
         if scraper_var:
@@ -2168,6 +2236,8 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
     links = None
     errors: List[str] = []
     debug_files: List[str] = []
+    frame_stop_event: Optional[asyncio.Event] = None
+    frame_task: Optional[asyncio.Task] = None
 
     try:
         logger.info(f"🎯 Unified scraping request {request_id}: {request.url}")
@@ -2175,6 +2245,16 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
         # Get scraper instance (per-domain session + sticky proxy when available)
         domain = _get_domain_from_url(str(request.url))
         scraper = await get_scraper(domain=domain)
+
+        # Start debug frame recorder (10 fps) if debug=true
+        if request.debug:
+            try:
+                frame_stop_event = asyncio.Event()
+                frame_task = asyncio.create_task(
+                    _record_debug_frames(scraper, request_id, frame_stop_event, fps=10)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Could not start debug frame recorder: {e}")
         
         # Configure proxy
         if request.use_proxy:
@@ -2368,11 +2448,6 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             if final_path:
                 debug_files.append(final_path)
 
-            # Attach debug video if available
-            video_path = await _attach_debug_video(scraper, request_id)
-            if video_path:
-                debug_files.append(video_path)
-
             # Collect all debug files for this request id (screenshots + HTML + video)
             try:
                 _ensure_debug_dir()
@@ -2391,6 +2466,14 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                 debug_files = debug_files or []
         # Store domain session on successful page load
         await _store_domain_session(scraper, str(request.url))
+
+        # Stop debug frame recorder before cleanup
+        if frame_stop_event and frame_task:
+            try:
+                frame_stop_event.set()
+                await frame_task
+            except Exception:
+                pass
 
         await cleanup_scraper(scraper)
 
@@ -2420,6 +2503,14 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
         logger.error(f"❌ {error_msg}")
 
         try:
+            # Stop debug frame recorder on error
+            if frame_stop_event and frame_task:
+                try:
+                    frame_stop_event.set()
+                    await frame_task
+                except Exception:
+                    pass
+
             await cleanup_scraper(scraper)
         except Exception:
             pass
