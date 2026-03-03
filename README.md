@@ -37,6 +37,19 @@ FairScrapper provides a sustainable web scraping solution with proxy rotation an
 - 🔄 Automatic proxy rotation
 - 🛡️ Rate limiting and fair use
 
+✨ **Scraping & Request**
+- ⏱️ **wait_time**: Waits after page load, **before** any clicks (use 15–20s on challenge-heavy sites).
+- 🖱️ **Sequential clicks**: `"click": [".btn1", 200, ".btn2"]` — selectors are clicked in order and integers are treated as waits in milliseconds; use **`__verify_human__`** as first item to click “Verify you are human” on challenge pages.
+- 📄 **errors**: Response includes an `errors` array with warnings and non-fatal failures (e.g. element not found, click failed).
+- 🚫 **Early fail**: On navigate/timeout failure the API returns only `success`, `url`, `error`, `load_time`, `timestamp` (no empty `data`).
+
+✨ **Debug & Scripts**
+- 📁 **Debug folder**: Optional screenshots and HTML snapshots per request (initial page + after each click); files older than 5 days are auto-deleted. Folder is `debug/` (contents in `.gitignore`).
+- 🔄 **restart.sh**: Restart the API (`./restart.sh` or `./restart.sh --debug`).
+
+✨ **Stealth (optional)**
+- Set **`USE_STEALTH=true`** in `.env` to enable playwright-stealth and reduce bot detection on challenge pages. Requires `playwright-stealth` (included in `requirements.txt`).
+
 🎨 **Advanced Selector Syntax**
 - Standard CSS selectors
 - Attribute extraction: `selector(attribute)`
@@ -74,8 +87,9 @@ FairScrapper provides a sustainable web scraping solution with proxy rotation an
 1. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
-   playwright install
+   python -m playwright install chromium
    ```
+   (If you see *Executable doesn't exist at .../chromium_headless_shell-...*, run the line above with the same Python you use to start the API, e.g. `./venv/bin/python -m playwright install chromium`.)
 
 2. **Start the API:**
    ```bash
@@ -184,13 +198,18 @@ The API will be available at `http://localhost:8888` (or your domain)
 
 ### Environment Variables
 
-Create a `.env` file based on `env_example.txt`:
+The install script creates a `.env` from `env_example.txt` if one does not exist. You can also copy it manually:
+
+```bash
+cp env_example.txt .env
+```
+
+Main variables (see `env_example.txt` for the full list):
 
 ```env
 # API Configuration
 API_HOST=0.0.0.0
 API_PORT=8888
-DEBUG=False
 
 # SSL/HTTPS Configuration
 SSL_ENABLED=true
@@ -198,20 +217,20 @@ SSL_CERT_FILE=./ssl/cert.pem
 SSL_KEY_FILE=./ssl/key.pem
 
 # Browser Configuration
-HEADLESS=True
+HEADLESS=true
 TIMEOUT=30000
-VIEWPORT_WIDTH=1920
-VIEWPORT_HEIGHT=1080
 
 # Proxy Configuration (Optional)
 PROXY_ENABLED=true
-
-# Multiple Proxy Support
-PROXY_LIST=http://proxy1.example.com:8080,http://proxy2.example.com:8080,http://proxy3.example.com:8080
+PROXY_LIST=http://proxy1.example.com:8080,http://proxy2.example.com:8080
 PROXY_ROTATION_ENABLED=true
 PROXY_MAX_FAILURES=3
 PROXY_TEST_INTERVAL=3600
+
+# Stealth (optional): reduce bot detection on challenge pages
+USE_STEALTH=false
 ```
+Set `USE_STEALTH=true` when scraping sites that show “Verify you are human” or similar challenges; then restart the API (`./restart.sh`).
 
 ### Proxy Setup
 
@@ -362,8 +381,9 @@ http://localhost:8888   # HTTP (if SSL disabled)
   "url": "https://example.com",
   "use_proxy": false,
   "wait_time": 2,
+  "click": [".optional-button"],
   "debug": false,
-  "screenshot": false,
+  "take_screenshot": false,
   "get": {
     "field_name": "css_selector"
   },
@@ -379,21 +399,26 @@ http://localhost:8888   # HTTP (if SSL disabled)
 }
 ```
 
-**Response:**
+- **wait_time**: Seconds to wait after page load, **before** any clicks. Use 15–20 on sites that show a challenge page.
+- **click**: List of CSS selectors and/or integers in milliseconds. Strings are clicked in order; integer entries are waits between them. Use **`__verify_human__`** as the first item to click “Verify you are human” on challenge pages (e.g. `"click": ["__verify_human__", ".js-phone"]` or `"click": ["__verify_human__", 2000, ".js-phone"]`).
+
+**Response (success):**
 ```json
 {
   "success": true,
   "url": "https://example.com",
   "data": {
-    "get_results": {},
-    "collect_results": {}
+    "get": {},
+    "collect": {}
   },
   "load_time": 2.45,
   "timestamp": "2025-01-09 12:34:56",
   "screenshot_path": null,
-  "links": []
+  "links": null,
+  "errors": []
 }
 ```
+`errors` lists non-fatal issues (e.g. element not found, click failed). On hard failure (e.g. navigate timeout), the response contains only `success`, `url`, `error`, `load_time`, `timestamp`, `proxy_used` (no `data`).
 
 #### GET /health
 

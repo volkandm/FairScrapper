@@ -14,6 +14,7 @@ import random
 import os
 import socks
 import socket
+from typing import Optional, Dict, Any
 from playwright.async_api import async_playwright
 from config import Config
 import logging
@@ -151,8 +152,8 @@ class WebScraper:
             self.proxy_failures[proxy_url] = 1
         logger.warning(f"Proxy {proxy_url} marked as failed (failures: {self.proxy_failures[proxy_url]})")
     
-    async def setup_browser(self):
-        """Setup browser with proxy configuration"""
+    async def setup_browser(self, storage_state: Optional[Dict[str, Any]] = None):
+        """Setup browser with proxy configuration and optional storage state"""
         try:
             self.playwright = await async_playwright().start()
             
@@ -224,12 +225,28 @@ class WebScraper:
                 args=browser_args
             )
             
-            # Create context with proxy
-            self.context = await self.browser.new_context(
-                proxy=proxy_config,
-                viewport={'width': 1920, 'height': 1080},
-                user_agent=self.config.USER_AGENT
-            )
+            # Create context with proxy and optional storage state
+            context_kwargs: Dict[str, Any] = {
+                "proxy": proxy_config,
+                "viewport": {"width": 1920, "height": 1080},
+                "user_agent": self.config.USER_AGENT,
+            }
+            if storage_state:
+                context_kwargs["storage_state"] = storage_state
+
+            self.context = await self.browser.new_context(**context_kwargs)
+
+            # Optional: reduce bot detection when USE_STEALTH=true
+            if os.getenv("USE_STEALTH", "").lower() in ("1", "true", "yes"):
+                try:
+                    from playwright_stealth import Stealth
+                    stealth = Stealth()
+                    await stealth.apply_stealth_async(self.context)
+                    logger.info("Stealth evasions applied (USE_STEALTH)")
+                except ImportError:
+                    logger.warning("USE_STEALTH set but playwright-stealth not installed: pip install playwright-stealth")
+                except Exception as e:
+                    logger.warning(f"Stealth apply failed: {e}")
             
             # Create page
             self.page = await self.context.new_page()
@@ -244,15 +261,39 @@ class WebScraper:
             raise
     
     async def navigate_to_url(self, url):
-        """Navigate to a specific URL"""
+        """Navigate to a specific URL with robust timeout handling"""
         try:
-            logger.info(f"Navigating to: {url}")
-            await self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
-            logger.info("Page loaded successfully")
-            
-            # Wait for JavaScript to load
+            try:
+                # Use configured timeout if available, otherwise fallback to 30000ms
+                goto_timeout = getattr(self.config, "TIMEOUT", 30000)
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=goto_timeout)
+                logger.info("Page loaded successfully")
+            except Exception as e:
+                error_msg = str(e)
+                # Hard failures: connection lost, EPIPE, browser closed -> re-raise
+                if "EPIPE" in error_msg or ("browser" in error_msg.lower() and "closed" in error_msg.lower()):
+                    logger.error(f"❌ Critical navigation error for {url}: {error_msg}")
+                    raise
+
+                # Soft timeout: check if page is still usable
+                logger.warning(f"⚠️ Page.goto warning/timeout for {url}: {error_msg}")
+                current_url = ""
+                try:
+                    current_url = self.page.url
+                except Exception:
+                    pass
+
+                if not current_url or "about:blank" in current_url:
+                    # Real failure, propagate
+                    logger.error(f"❌ Page failed to load (still about:blank): {error_msg}")
+                    raise
+                else:
+                    # URL changed; continue with partially loaded/challenge page
+                    logger.info(f"⚠️ Continuing despite navigation timeout; current URL: {current_url}")
+
+            # Wait a bit to allow JavaScript to run
             await asyncio.sleep(2)
-            
+
         except Exception as e:
             logger.error(f"Error navigating to {url}: {e}")
             raise

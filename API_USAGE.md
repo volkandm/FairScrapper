@@ -16,16 +16,29 @@ The API requires authentication using the `X-API-Key` header.
 
 ```bash
 # Start the API
+./start.sh
+
+# Or directly
 python api.py
+
+# Restart (stop then start)
+./restart.sh
+./restart.sh --debug   # run in foreground with logs
 
 # Or with uvicorn
 uvicorn api:app --host 0.0.0.0 --port 8888
 ```
 
+**Optional (challenge pages):** Set `USE_STEALTH=true` in `.env` to reduce bot detection; then restart the API.
+
 After starting the API, you can access it at:
 - **API**: `http://localhost:8888` (or your domain)
 - **Documentation**: `http://localhost:8888/docs` (or your domain)
 - **Health Check**: `http://localhost:8888/health` (POST only)
+
+### GET /scrape – Usage hint
+
+Sending a GET request to `/scrape` returns a short usage message (use POST with JSON body and `X-API-Key` header).
 
 ## 📋 Endpoints (POST Only)
 
@@ -98,6 +111,7 @@ Content-Type: application/json
   "timestamp": "2025-01-11 02:45:00",
   "screenshot_path": null,
   "links": null,
+  "errors": [],
   "proxy_used": {
     "url": "http://198.23.239.134:6540",
     "type": "HTTP",
@@ -106,6 +120,9 @@ Content-Type: application/json
   }
 }
 ```
+
+- **errors**: Array of non-fatal issues (e.g. element not found, click failed). Empty when no warnings.
+- **On hard failure** (e.g. navigate timeout): response contains only `success`, `url`, `error`, `load_time`, `timestamp`, `proxy_used` (no `data`).
 
 ### 2. **POST /scrape** - Simple HTML Source
 
@@ -133,6 +150,7 @@ If no `get` or `collect` fields are provided, returns the complete HTML source c
   "timestamp": "2025-01-11 02:45:00",
   "screenshot_path": null,
   "links": null,
+  "errors": [],
   "proxy_used": {
     "url": "http://198.23.239.134:6540",
     "type": "HTTP",
@@ -274,9 +292,17 @@ Images are returned as base64 encoded data URLs:
 
 The API supports sequential click operations before scraping. This is useful for interacting with pages that require user actions (e.g., accepting cookies, opening modals, navigating through wizard steps).
 
+### **Order: wait_time then clicks**
+
+1. Page loads and `domcontentloaded` is waited for.
+2. **`wait_time`** (seconds) is applied — use 15–20 on sites that show a challenge page.
+3. DOM is waited as ready.
+4. **Click operations** run in order.
+5. Scraping (get/collect) runs.
+
 ### **Click Feature**
 
-Click operations are executed **after** the page loads but **before** scraping begins. Each click operation:
+Click operations are executed **after** `wait_time` and DOM ready, **before** scraping. Each click operation:
 - Waits for the element to be visible
 - Clicks the element
 - Waits at least 100ms
@@ -317,11 +343,25 @@ Click operations are executed **after** the page loads but **before** scraping b
 }
 ```
 
+### **Special selector: `__verify_human__`**
+
+Use `"__verify_human__"` as the first (or only) click when the page shows a “Verify you are human” challenge. The API will look for the challenge iframe and click the verify checkbox, then continue with any other clicks.
+
+```json
+{
+  "url": "https://example.com",
+  "wait_time": 15,
+  "click": ["__verify_human__", ".js-phone"],
+  "get": { "phone": ".js-phone" }
+}
+```
+
 ### **Click Workflow**
 
-1. **Page loads** - Initial URL is navigated
-2. **DOM ready** - Waits for page to be ready
-3. **Click operations** - Executes clicks in sequence:
+1. **Page loads** – Initial URL is navigated
+2. **wait_time** – Sleep for the given seconds
+3. **DOM ready** – Waits for page to be ready
+4. **Click operations** – Executes clicks in sequence:
    - `click[0]` → wait for completion
    - `click[1]` → wait for completion
    - `click[2]` → wait for completion
@@ -380,7 +420,7 @@ Click operations are executed **after** the page loads but **before** scraping b
 ### **Error Handling**
 
 If a click selector cannot be found:
-- A warning is logged
+- A warning is logged and added to the response `errors` array
 - The click is skipped
 - Execution continues with the next click
 - Scraping proceeds with the current page state
@@ -950,15 +990,29 @@ fetch('http://localhost:8888/scrape', {
 | `url` | string | - | URL to scrape (required) |
 | `use_proxy` | boolean | true | Use proxy |
 | `proxy_url` | string | null | Custom proxy URL |
-| `wait_time` | integer | 3 | Wait time after page load (seconds) |
+| `wait_time` | integer | 3 | Wait time after page load, **before** any clicks (seconds). Use 15–20 on challenge-heavy sites. |
 | `wait_for_element` | boolean | false | Wait for specific element |
 | `element_timeout` | integer | 30 | Timeout for element waiting (seconds) |
 | `debug` | boolean | false | Include debug HTML in response |
 | `take_screenshot` | boolean | false | Take screenshot |
 | `extract_links` | boolean | false | Extract all links from page |
-| `click` | array | null | Array of CSS selectors to click in sequence before scraping |
+| `click` | array | null | CSS selectors (strings) and/or waits (integers, milliseconds) to run in sequence before scraping. Use `"__verify_human__"` to click “Verify you are human” on challenge pages. |
 | `get` | object | null | Single element extractions |
 | `collect` | object | null | Collection extractions |
+
+### Debug output
+
+When scraping runs, the API can write debug files into the `debug/` folder (same name as request; contents are in `.gitignore`):
+
+- **Screenshot** of the page after load (before clicks): `{request_id}_00_initial.png`
+- **Screenshot** after each click (if `click` is used): `{request_id}_01_after_click_1.png`, etc.
+- **HTML** of the same moments: `{request_id}_00_initial.html`, `{request_id}_01_after_click_1.html`, etc.
+
+Files older than 5 days are deleted automatically.
+
+### Stealth mode (optional)
+
+Set **`USE_STEALTH=true`** in `.env` to enable playwright-stealth and reduce bot detection on challenge pages. Restart the API after changing (e.g. `./restart.sh`). Requires `playwright-stealth` (in `requirements.txt`).
 
 ### Supported Proxy Types
 
@@ -1184,6 +1238,13 @@ This API provides:
 - ✅ **Multiple formats** - Support for all image formats (JPEG, PNG, WebP, etc.)
 - ✅ **Click operations** - Sequential click operations before scraping
 - ✅ **Navigation detection** - Automatic detection of page navigation after clicks
+- ✅ **wait_time before clicks** - Configurable wait after load, then clicks, then scraping
+- ✅ **__verify_human__** - Special click to handle “Verify you are human” on challenge pages
+- ✅ **errors in response** - Non-fatal issues (e.g. element not found) returned in `errors` array
+- ✅ **Early fail** - On navigate/timeout failure, response contains only `error` (no empty `data`)
+- ✅ **Debug folder** - Optional screenshots and HTML per request; auto-cleanup after 5 days
+- ✅ **Stealth** - Optional `USE_STEALTH=true` in `.env` to reduce bot detection
+- ✅ **restart.sh** - Script to restart the API
 - ✅ **DOM stabilization** - Waits for page updates after each click
 
 ### **Key Features Summary**

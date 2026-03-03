@@ -34,13 +34,220 @@ import uuid
 import re
 import base64
 import aiohttp
+from urllib.parse import urlparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# API Keys (load from environment variables for security)
 VALID_API_KEYS = os.getenv('VALID_API_KEYS', 'sk-demo-key-12345').split(',')
+
+# Debug screenshots: folder and retention
+DEBUG_DIR = "debug"
+DEBUG_MAX_AGE_DAYS = 5
+
+# Domain sessions: keep per-domain storage_state + sticky proxy for 1 day
+SESSION_TTL_SECONDS = 24 * 60 * 60  # 1 day
+domain_sessions: Dict[str, Dict[str, Any]] = {}
+
+
+def _ensure_debug_dir() -> str:
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    return DEBUG_DIR
+
+
+def _cleanup_old_debug_files() -> None:
+    """Remove debug files older than DEBUG_MAX_AGE_DAYS to avoid accumulation."""
+    try:
+        _ensure_debug_dir()
+        now = time.time()
+        max_age_seconds = DEBUG_MAX_AGE_DAYS * 24 * 3600
+        for name in os.listdir(DEBUG_DIR):
+            if name == ".gitkeep":
+                continue
+            path = os.path.join(DEBUG_DIR, name)
+            if not os.path.isfile(path):
+                continue
+            if now - os.path.getmtime(path) > max_age_seconds:
+                try:
+                    os.remove(path)
+                    logger.info(f"🗑️ Removed old debug file: {path}")
+                except OSError as e:
+                    logger.warning(f"Could not remove old debug file {path}: {e}")
+    except OSError as e:
+        logger.warning(f"Debug cleanup error: {e}")
+
+
+def _get_domain_from_url(url: str) -> Optional[str]:
+    """Extract hostname (domain) from URL string."""
+    try:
+        parsed = urlparse(str(url))
+        return parsed.hostname
+    except Exception:
+        return None
+
+
+def _get_valid_domain_session(domain: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return cached session for domain if it exists and is not expired."""
+    if not domain:
+        return None
+
+    session = domain_sessions.get(domain)
+    if not session:
+        return None
+
+    created_at = session.get("created_at")
+    if not isinstance(created_at, (int, float)):
+        return None
+
+    if time.time() - created_at > SESSION_TTL_SECONDS:
+        # Session expired, remove it
+        domain_sessions.pop(domain, None)
+        logger.info(f"🗑️ Domain session expired for {domain}")
+        return None
+
+    return session
+
+
+async def _store_domain_session(scraper: WebScraper, url: str) -> None:
+    """Store storage_state + proxy index for a domain after successful load."""
+    domain = _get_domain_from_url(url)
+    if not domain:
+        return
+
+    try:
+        storage_state = None
+        if getattr(scraper, "context", None) is not None:
+            storage_state = await scraper.context.storage_state()
+
+        proxy_index = getattr(scraper, "current_proxy_index", None)
+        domain_sessions[domain] = {
+            "created_at": time.time(),
+            "proxy_index": proxy_index,
+            "storage_state": storage_state,
+        }
+        logger.info(f"💾 Stored domain session for {domain} (proxy_index={proxy_index})")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to store domain session for {domain}: {e}")
+
+
+async def _test_proxy_connectivity(scraper: WebScraper) -> Dict[str, Any]:
+    """
+    Test current proxy by hitting a fast external endpoint.
+    Returns a small dict with success flag, ip (if any), and error message.
+    """
+    test_url = "https://httpbin.org/ip"
+    result: Dict[str, Any] = {
+        "success": False,
+        "ip": None,
+        "error": None,
+        "test_url": test_url,
+    }
+
+    if not scraper or not getattr(scraper, "page", None):
+        result["error"] = "No active page to run proxy test"
+        return result
+
+    try:
+        await scraper.page.goto(test_url, wait_until="domcontentloaded", timeout=8000)
+        try:
+            body = await scraper.page.evaluate("() => document.body.innerText")
+            ip_data = json.loads(body)
+            result["ip"] = ip_data.get("origin")
+            result["success"] = True
+        except Exception as parse_err:
+            result["error"] = f"IP parse failed: {parse_err}"
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+async def _save_debug_html(scraper: WebScraper, html_path: str) -> Optional[str]:
+    """Save current page HTML to html_path (e.g. debug/abc123_00_initial.html). Same base name as screenshot."""
+    if not scraper or not scraper.page:
+        return None
+    try:
+        html = await scraper.page.content()
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        logger.info(f"📄 Debug HTML: {html_path}")
+        return html_path
+    except Exception as e:
+        logger.error(f"Debug HTML save failed: {e}")
+        return None
+
+
+async def _save_debug_screenshot(scraper: WebScraper, filepath: str) -> Optional[str]:
+    """Save a screenshot to filepath (e.g. debug/abc123_00_initial.png). Also saves same-name .html. Ensures dir exists and prunes old files."""
+    if not scraper or not scraper.page:
+        return None
+    _ensure_debug_dir()
+    _cleanup_old_debug_files()
+    try:
+        await scraper.take_screenshot(filepath)
+        logger.info(f"📸 Debug screenshot: {filepath}")
+        # Overlay coordinate grid on the screenshot to help with x/y based clicks
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+
+            img = Image.open(filepath).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            width, height = img.size
+
+            # Try a slightly bigger font; fallback to default
+            try:
+                font = ImageFont.truetype("arial.ttf", 14)
+            except Exception:
+                font = ImageFont.load_default()
+
+            step = 100  # grid size in pixels
+            # Very light grid, darker text for readability
+            line_color = (210, 210, 210)  # light gray
+            text_color = (60, 60, 60)     # dark gray
+
+            # Draw grid lines
+            for x in range(0, width, step):
+                draw.line([(x, 0), (x, height)], fill=line_color, width=1)
+            for y in range(0, height, step):
+                draw.line([(0, y), (width, y)], fill=line_color, width=1)
+
+            # Draw coordinate labels at intersections (every 200px to avoid clutter)
+            for x in range(0, width, step):
+                for y in range(0, height, step):
+                    if x % 200 == 0 and y % 200 == 0:
+                        label = f"{x}x{y}"
+                        draw.text((x + 4, y + 4), label, font=font, fill=text_color)
+
+            # If we have a last coordinate click marker and this is an after-click screenshot,
+            # draw a visible crosshair at that position
+            marker = getattr(scraper, "_last_click_coords", None)
+            if marker and "_after_click_" in os.path.basename(filepath):
+                mx, my = marker
+                cross_color = (255, 0, 0)  # red for visibility
+                size = 8
+                # Horizontal line
+                draw.line([(mx - size, my), (mx + size, my)], fill=cross_color, width=2)
+                # Vertical line
+                draw.line([(mx, my - size), (mx, my + size)], fill=cross_color, width=2)
+                # Small label near marker
+                draw.text((mx + 6, my + 6), f"{mx}x{my}", font=font, fill=cross_color)
+
+            img.save(filepath)
+            logger.info("🧭 Debug grid overlay applied to screenshot")
+        except ImportError:
+            # Pillow is optional at runtime; if missing, just keep raw screenshot
+            logger.warning("Pillow not installed, skipping debug grid overlay")
+        except Exception as grid_err:
+            logger.warning(f"⚠️ Failed to apply debug grid overlay: {grid_err}")
+
+        # Save page HTML with same base name, .html extension
+        html_path = filepath.rsplit(".", 1)[0] + ".html" if "." in filepath else filepath + ".html"
+        await _save_debug_html(scraper, html_path)
+        return filepath
+    except Exception as e:
+        logger.error(f"Debug screenshot failed: {e}")
+        return None
 
 # Lifespan event handler
 from contextlib import asynccontextmanager
@@ -76,7 +283,9 @@ class UnifiedScrapeRequest(BaseModel):
     debug: bool = False
     take_screenshot: bool = False
     extract_links: bool = False
-    click: Optional[List[str]] = None  # Array of CSS selectors to click in sequence
+    # CSS selectors (strings) and/or waits (integers, milliseconds) in sequence.
+    # Use "__verify_human__" to click "Verify you are human" on challenge pages.
+    click: Optional[List[Union[str, int]]] = None
     get: Optional[Dict[str, Union[str, Dict[str, Any]]]] = None
     collect: Optional[Dict[str, Dict[str, Any]]] = None
 
@@ -163,24 +372,39 @@ async def verify_api_key(x_api_key: str = Header(None)):
     
     return x_api_key
 
-# Scraper pool
+# Scraper pool (currently unused, kept for compatibility)
 scraper_pool = []
 
-async def get_scraper():
-    """Get scraper from pool or create new one with robust error handling"""
+
+async def get_scraper(domain: Optional[str] = None):
+    """Get scraper instance with optional per-domain session and sticky proxy."""
     import random
-    
+
     scraper = None
     try:
-        # Create new scraper for IP rotation
+        # Create new scraper
         scraper = WebScraper()
-        
-        # Set random proxy index for rotation
-        if scraper.proxy_list:
-            scraper.current_proxy_index = random.randint(0, len(scraper.proxy_list) - 1)
-            logger.info(f"🎲 Random proxy selected: index {scraper.current_proxy_index}")
-        
-        await scraper.setup_browser()
+
+        # Try to reuse existing domain session (storage_state + proxy index)
+        session = _get_valid_domain_session(domain) if domain else None
+
+        if session and scraper.proxy_list:
+            proxy_index = session.get("proxy_index")
+            if isinstance(proxy_index, int) and 0 <= proxy_index < len(scraper.proxy_list):
+                scraper.current_proxy_index = proxy_index
+                logger.info(f"🎯 Reusing session proxy index {proxy_index} for domain {domain}")
+            elif scraper.proxy_list:
+                scraper.current_proxy_index = random.randint(0, len(scraper.proxy_list) - 1)
+                logger.info(f"🎲 Random proxy selected: index {scraper.current_proxy_index}")
+        else:
+            # No existing session, keep current behaviour: random proxy rotation
+            if scraper.proxy_list:
+                scraper.current_proxy_index = random.randint(0, len(scraper.proxy_list) - 1)
+                logger.info(f"🎲 Random proxy selected: index {scraper.current_proxy_index}")
+
+        storage_state = session.get("storage_state") if session else None
+
+        await scraper.setup_browser(storage_state=storage_state)
         return scraper
     except Exception as e:
         error_msg = str(e)
@@ -1210,6 +1434,20 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
     
     return cleaned_results
 
+
+@app.get("/scrape")
+async def scrape_usage():
+    """Return usage hint when GET is used instead of POST."""
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "Use POST with JSON body. Example: curl -X POST http://127.0.0.1:8888/scrape -H 'Content-Type: application/json' -H 'X-API-Key: sk-demo-key-12345' -d '{\"url\":\"https://example.com\",\"use_proxy\":false,\"wait_time\":2}'",
+            "required": {"url": "string"},
+            "required_header": "X-API-Key",
+        },
+    )
+
+
 @app.post("/scrape")
 async def scrape_website(
     request: UnifiedScrapeRequest,
@@ -1244,86 +1482,301 @@ async def scrape_website(
     - SOCKS5: socks5://proxy.com:1080
     - With credentials: socks5://proxy.com:1080:username:password
     """
-    
-    # Check if this is a simple HTML request (no get/collect fields)
-    if not request.get and not request.collect:
-        # Simple HTML source code request
-        logger.info("🎯 Simple HTML source request")
-        return await scrape_html_source(request, api_key)
-    else:
-        # Unified scraping request
-        logger.info("🎯 Using unified format")
-        return await scrape_unified(request, api_key)
+    try:
+        # Check if this is a simple HTML request (no get/collect fields)
+        if not request.get and not request.collect:
+            # Simple HTML source code request
+            logger.info("🎯 Simple HTML source request")
+            return await scrape_html_source(request, api_key)
+        else:
+            # Unified scraping request
+            logger.info("🎯 Using unified format")
+            return await scrape_unified(request, api_key)
+    except Exception as e:
+        logger.exception("❌ Scrape endpoint error")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+                "message": "Scraping failed. Check server logs for details.",
+            },
+        )
 
-async def execute_clicks(scraper: WebScraper, click_selectors: List[str]):
+
+# Special click target: "Verify you are human" checkbox on challenge pages (runs inside iframe)
+VERIFY_HUMAN_SELECTOR = "__verify_human__"
+
+
+async def _is_challenge_page(scraper: WebScraper) -> bool:
+    """True if the current page is a security verification / challenge page."""
+    try:
+        if not scraper or not scraper.page or scraper.page.is_closed():
+            return False
+        title = (await scraper.page.title()).lower()
+        if "just a moment" in title:
+            return True
+        body = await scraper.page.content()
+        return "Performing security verification" in body or "cf-turnstile" in body
+    except Exception:
+        return False
+
+
+async def _click_verify_human(scraper: WebScraper) -> bool:
+    """Find challenge iframe and click the verify-human widget. Returns True if clicked."""
+    try:
+        page = scraper.page
+        if not page or page.is_closed():
+            return False
+        await asyncio.sleep(3)
+        iframe_selectors = [
+            "iframe[src*='turnstile']",
+            "iframe[src*='challenges']",
+            "iframe[title*='Widget containing']",
+        ]
+        for iframe_sel in iframe_selectors:
+            try:
+                frame = page.frame_locator(iframe_sel).first
+                for inner in [
+                    "input[type='checkbox']",
+                    "[role='checkbox']",
+                    "label:has-text('Verify')",
+                    "label:has-text('human')",
+                    ".mark",
+                    "#cf-turnstile",
+                ]:
+                    try:
+                        loc = frame.locator(inner).first
+                        await loc.wait_for(state="visible", timeout=3000)
+                        await loc.click(timeout=5000)
+                        logger.info("✅ Verify-human checkbox clicked")
+                        return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        logger.warning("⚠️ Verify-human iframe/checkbox not found")
+        return False
+    except Exception as e:
+        logger.warning(f"⚠️ Verify-human click failed: {e}")
+        return False
+
+
+async def execute_clicks(
+    scraper: WebScraper,
+    click_selectors: List[Union[str, int]],
+    request_id: Optional[str] = None,
+    errors: Optional[List[str]] = None,
+):
     """
-    Execute click operations in sequence with robust error handling
-    
+    Execute click operations in sequence with robust error handling.
+    When request_id is set, saves a debug screenshot after each click.
+    Special selector "__verify_human__": clicks "Verify you are human" inside challenge iframe.
+    Syntax "iframe:IFRAME_SEL >> INNER_SEL": click INNER_SEL inside the given iframe.
+
     Args:
         scraper: WebScraper instance
-        click_selectors: List of CSS selectors to click in order
-    
+        click_selectors: List of CSS selectors (or special/iframe syntax) to click in order,
+            and/or integers treated as waits in milliseconds
+        request_id: Optional id for debug screenshots (e.g. after each click)
+        errors: Optional list to append warning/error messages for API response
+
     Returns:
         True if all clicks succeeded, False otherwise
     """
     if not click_selectors or not scraper or not scraper.page:
         return True
-    
-    logger.info(f"🖱️ Executing {len(click_selectors)} click operations")
-    
-    for i, selector in enumerate(click_selectors, 1):
+
+    total_steps = len(click_selectors)
+    total_clicks = sum(1 for item in click_selectors if not isinstance(item, (int, float)))
+    if total_clicks > 0:
+        logger.info(f"🖱️ Executing {total_clicks} click operations with {total_steps - total_clicks} wait steps")
+    else:
+        logger.info(f"🕒 Executing {total_steps} wait steps (no clickable selectors)")
+
+    click_index = 0
+
+    for step_index, item in enumerate(click_selectors, 1):
+        # Integer/number entries are treated as waits in milliseconds between clicks
+        if isinstance(item, (int, float)):
+            wait_ms = max(int(item), 0)
+            if wait_ms > 0:
+                logger.info(f"⏳ [step {step_index}/{total_steps}] Waiting {wait_ms} ms before next click")
+                try:
+                    await asyncio.sleep(wait_ms / 1000.0)
+                except Exception as e:
+                    error_msg = str(e)
+                    if 'EPIPE' in error_msg:
+                        logger.error(f"❌ Browser connection lost during wait step: {error_msg}")
+                        return False
+                    msg = f"Error during wait step {step_index}: {error_msg}"
+                    logger.warning(f"⚠️ {msg}")
+                    if errors is not None:
+                        errors.append(msg)
+            else:
+                logger.info(f"⏳ [step {step_index}/{total_steps}] Skipping non-positive wait value: {item}")
+            continue
+
+        selector = item
+
         try:
-            logger.info(f"🖱️ [{i}/{len(click_selectors)}] Clicking element: {selector}")
-            
+            click_index += 1
+            logger.info(f"🖱️ [click {click_index}/{total_clicks}] Clicking element: {selector}")
+
             # Check if page is still valid
             try:
                 if scraper.page.is_closed():
-                    logger.error(f"❌ Page is closed, cannot execute clicks")
+                    logger.error("❌ Page is closed, cannot execute clicks")
                     return False
-            except:
-                logger.error(f"❌ Page is no longer valid, cannot execute clicks")
+            except Exception:
+                logger.error("❌ Page is no longer valid, cannot execute clicks")
                 return False
-            
-            # Wait for element to be visible and clickable
+
+            # Reset last coordinate marker by default (only coordinate clicks will set it)
             try:
-                await scraper.page.wait_for_selector(selector, state='visible', timeout=10000)
-                # Additional wait to ensure element is clickable
-                await scraper.page.wait_for_selector(selector, state='attached', timeout=5000)
-                logger.info(f"✅ Element found and ready: {selector}")
-            except Exception as e:
-                error_msg = str(e)
-                # EPIPE and browser closed errors are critical
-                if 'EPIPE' in error_msg or 'browser' in error_msg.lower() and 'closed' in error_msg.lower():
-                    logger.error(f"❌ Browser connection lost: {error_msg}")
-                    return False
-                logger.warning(f"⚠️ Element not found or not visible: {selector} - {error_msg}")
-                continue  # Skip this click if element not found
-            
-            # Store current URL to detect navigation
+                setattr(scraper, "_last_click_coords", None)
+            except Exception:
+                pass
+
+            # Normalize selector and detect click mode
+            raw_selector = selector.strip()
+            physical_only = False
+            if raw_selector.startswith("physical:"):
+                physical_only = True
+                raw_selector = raw_selector[len("physical:") :].strip()
+
+            # Coordinate click syntax: "100x200" -> click at (100, 200)
+            coord_match = None
             try:
+                # Match two integers separated by 'x' or 'X', optional spaces
+                coord_match = re.fullmatch(r"(\d+)\s*[xX]\s*(\d+)", raw_selector)
+            except Exception:
+                coord_match = None
+
+            if coord_match:
+                try:
+                    x = int(coord_match.group(1))
+                    y = int(coord_match.group(2))
+                    try:
+                        setattr(scraper, "_last_click_coords", (x, y))
+                    except Exception:
+                        pass
+                    current_url_before = scraper.page.url
+                    # Move mouse to coordinate first (more "human-like"), then click
+                    try:
+                        await scraper.page.mouse.move(x, y, steps=10)
+                    except Exception:
+                        # If move fails, still attempt direct click
+                        pass
+                    await scraper.page.mouse.click(x, y)
+                    clicked = True
+                    logger.info(f"✅ Coordinate click at ({x}, {y})")
+                except Exception as e:
+                    error_msg = str(e)
+                    if 'EPIPE' in error_msg or ('browser' in error_msg.lower() and 'closed' in error_msg.lower()):
+                        logger.error(f"❌ Browser connection lost during coordinate click: {error_msg}")
+                        return False
+                    msg = f"Coordinate click failed at ({raw_selector}): {error_msg}"
+                    logger.error(f"❌ {msg}")
+                    if errors is not None:
+                        errors.append(msg)
+                    continue
+
+            # Special: verify-human checkbox (inside challenge iframe)
+            elif raw_selector == VERIFY_HUMAN_SELECTOR:
                 current_url_before = scraper.page.url
-            except Exception as e:
-                error_msg = str(e)
-                if 'EPIPE' in error_msg:
-                    logger.error(f"❌ Browser connection lost during click: {error_msg}")
-                    return False
-                logger.warning(f"⚠️ Cannot get current URL: {error_msg}")
-                continue
+                clicked = await _click_verify_human(scraper)
+                if clicked:
+                    await asyncio.sleep(2.0)  # allow challenge to complete
+                else:
+                    continue
+            # Syntax: iframe:IFRAME_SEL >> INNER_SEL — click inside iframe
+            elif raw_selector.startswith("iframe:") and " >> " in raw_selector:
+                parts = raw_selector.replace("iframe:", "", 1).split(" >> ", 1)
+                if len(parts) != 2:
+                    msg = f"Invalid iframe selector: {selector}"
+                    logger.warning(f"⚠️ {msg}")
+                    if errors is not None:
+                        errors.append(msg)
+                    continue
+                iframe_sel, inner_sel = parts[0].strip(), parts[1].strip()
+                try:
+                    frame = scraper.page.frame_locator(iframe_sel).first
+                    await frame.locator(inner_sel).first.wait_for(state="visible", timeout=10000)
+                    await frame.locator(inner_sel).first.click(timeout=5000)
+                    clicked = True
+                    logger.info(f"✅ Clicked inside iframe: {inner_sel}")
+                except Exception as e:
+                    msg = f"Iframe click failed: {e}"
+                    logger.error(f"❌ {msg}")
+                    if errors is not None:
+                        errors.append(msg)
+                    continue
+                current_url_before = scraper.page.url
+            else:
+                # Normal main-frame selector
+                try:
+                    await scraper.page.wait_for_selector(raw_selector, state='visible', timeout=10000)
+                    await scraper.page.wait_for_selector(raw_selector, state='attached', timeout=5000)
+                    logger.info(f"✅ Element found and ready: {raw_selector}")
+                except Exception as e:
+                    error_msg = str(e)
+                    if 'EPIPE' in error_msg or ('browser' in error_msg.lower() and 'closed' in error_msg.lower()):
+                        logger.error(f"❌ Browser connection lost: {error_msg}")
+                        return False
+                    msg = f"Element not found or not visible: {selector} - {error_msg}"
+                    logger.warning(f"⚠️ {msg}")
+                    if errors is not None:
+                        errors.append(msg)
+                    continue
+
+                try:
+                    current_url_before = scraper.page.url
+                except Exception as e:
+                    error_msg = str(e)
+                    if 'EPIPE' in error_msg:
+                        logger.error(f"❌ Browser connection lost during click: {error_msg}")
+                        return False
+                    msg = f"Cannot get current URL: {error_msg}"
+                    logger.warning(f"⚠️ {msg}")
+                    if errors is not None:
+                        errors.append(msg)
+                    continue
+
+                clicked = False
+                try:
+                    await scraper.page.click(raw_selector, timeout=5000)
+                    clicked = True
+                    logger.info(f"✅ Clicked: {raw_selector}")
+                except Exception as click_error:
+                    error_msg = str(click_error)
+                    if 'EPIPE' in error_msg or ('browser' in error_msg.lower() and 'closed' in error_msg.lower()):
+                        logger.error(f"❌ Browser connection lost during click: {error_msg}")
+                        return False
+                    # Optional JS fallback (skipped when physical_only=True)
+                    if not physical_only:
+                        try:
+                            did_click = await scraper.page.evaluate(
+                                """(sel) => { const el = document.querySelector(sel); if (el) { el.click(); return true; } return false; }""",
+                                raw_selector,
+                            )
+                            if did_click:
+                                clicked = True
+                                logger.info(f"✅ Clicked via JavaScript (overlay bypass): {raw_selector}")
+                        except Exception as js_click_err:
+                            msg = f"JS click fallback failed for {raw_selector}: {js_click_err}"
+                            logger.error(f"❌ {msg}")
+                            if errors is not None:
+                                errors.append(msg)
+                    if not clicked:
+                        msg = f"Failed to click {raw_selector}: {error_msg}"
+                        logger.error(f"❌ {msg}")
+                        if errors is not None:
+                            errors.append(msg)
+                        continue
             
-            # Click the element
-            try:
-                await scraper.page.click(selector, timeout=5000)
-                logger.info(f"✅ Clicked: {selector}")
-            except Exception as click_error:
-                error_msg = str(click_error)
-                if 'EPIPE' in error_msg or 'browser' in error_msg.lower() and 'closed' in error_msg.lower():
-                    logger.error(f"❌ Browser connection lost during click: {error_msg}")
-                    return False
-                logger.error(f"❌ Failed to click {selector}: {error_msg}")
-                continue
-            
-            # Minimum 100ms wait after click
-            await asyncio.sleep(0.1)
+            # Brief wait so DOM/JS updates (e.g. revealed content) after click are applied
+            await asyncio.sleep(0.3)
             
             # Wait for page to stabilize after click
             try:
@@ -1346,17 +1799,33 @@ async def execute_clicks(scraper: WebScraper, click_selectors: List[str]):
                 if 'EPIPE' in error_msg:
                     logger.error(f"❌ Browser connection lost during wait: {error_msg}")
                     return False
-                logger.warning(f"⚠️ Wait timeout after click: {error_msg}")
+                msg = f"Wait timeout after click: {error_msg}"
+                logger.warning(f"⚠️ {msg}")
+                if errors is not None:
+                    errors.append(msg)
                 # Continue anyway - page might still be usable
-            
-            logger.info(f"✅ Click {i}/{len(click_selectors)} completed successfully")
-            
+
+            logger.info(f"✅ Click {click_index}/{total_clicks} completed successfully")
+
+            # Debug: save screenshot after this click when request_id is provided
+            if request_id and clicked:
+                try:
+                    await _save_debug_screenshot(
+                        scraper,
+                        os.path.join(DEBUG_DIR, f"{request_id}_01_after_click_{click_index}.png"),
+                    )
+                except Exception:
+                    pass
+
         except Exception as e:
             error_msg = str(e)
             if 'EPIPE' in error_msg:
                 logger.error(f"❌ Browser connection lost: {error_msg}")
                 return False
-            logger.error(f"❌ Error executing click {i}/{len(click_selectors)} on {selector}: {error_msg}")
+            msg = f"Error executing click step {step_index}/{total_steps} on {selector}: {error_msg}"
+            logger.error(f"❌ {msg}")
+            if errors is not None:
+                errors.append(msg)
             # Continue with next click even if this one failed
             continue
     
@@ -1369,12 +1838,14 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
     start_time = time.time()
     screenshot_path = None
     links = None
-    
+    errors: List[str] = []
+
     try:
         logger.info(f"📄 HTML source request {request_id}: {request.url}")
-        
-        # Get scraper instance
-        scraper = await get_scraper()
+
+        # Get scraper instance (per-domain session + sticky proxy when available)
+        domain = _get_domain_from_url(str(request.url))
+        scraper = await get_scraper(domain=domain)
         
         # Configure proxy
         if request.use_proxy:
@@ -1390,59 +1861,74 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
         except Exception as e:
             error_msg = f"Failed to navigate to URL: {str(e)}"
             logger.error(f"❌ {error_msg}")
-            
-            # Return scraper to pool on error
+
+            # On navigation failure: test proxy, mark it as failed, and drop domain session
+            proxy_test = None
+            try:
+                if request.use_proxy:
+                    proxy_test = await _test_proxy_connectivity(scraper)
+            except Exception as proxy_err:
+                logger.error(f"❌ Proxy test failed: {proxy_err}")
+
+            try:
+                proxy_info = scraper.get_current_proxy_info()
+                if proxy_info and "url" in proxy_info:
+                    scraper.mark_proxy_failed(proxy_info["url"])
+            except Exception as mark_err:
+                logger.warning(f"⚠️ Could not mark proxy as failed: {mark_err}")
+
+            try:
+                domain = _get_domain_from_url(str(request.url))
+                if domain and domain in domain_sessions:
+                    domain_sessions.pop(domain, None)
+                    logger.info(f"🗑️ Dropped domain session for {domain} due to navigation failure")
+            except Exception:
+                pass
+
             try:
                 await cleanup_scraper(scraper)
-            except:
+            except Exception:
                 pass
-            
             return {
                 "success": False,
                 "url": str(request.url),
-                "html_source": "",
-                "content_length": 0,
+                "error": error_msg,
                 "load_time": time.time() - start_time,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "error": error_msg,
-                "screenshot_path": None,
-                "links": None,
-                "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None
+                "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None,
+                "proxy_test": proxy_test,
             }
-        
+
         # Wait for element if specified
         if request.wait_for_element:
             logger.info(f"⏳ Waiting for element with timeout: {request.element_timeout}s")
             await asyncio.sleep(request.element_timeout)
-        
+
         # Wait for page to load
         try:
             await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
         except Exception as e:
-            logger.warning(f"⚠️ DOM content loaded timeout: {str(e)}")
+            msg = f"DOM content loaded timeout: {str(e)}"
+            logger.warning(f"⚠️ {msg}")
+            errors.append(msg)
             # Check if page is accessible
             try:
                 current_url = scraper.page.url
                 if "about:blank" in current_url or not current_url:
                     error_msg = f"Page failed to load: {str(e)}"
                     logger.error(f"❌ {error_msg}")
-                    
                     await cleanup_scraper(scraper)
                     return {
                         "success": False,
                         "url": str(request.url),
-                        "html_source": "",
-                        "content_length": 0,
+                        "error": error_msg,
                         "load_time": time.time() - start_time,
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "error": error_msg,
-                        "screenshot_path": None,
-                        "links": None,
-                        "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None
+                        "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None,
                     }
-            except:
+            except Exception:
                 pass
-        
+
         if request.wait_time:
             logger.info(f"⏳ Waiting {request.wait_time} seconds")
             await asyncio.sleep(request.wait_time)
@@ -1452,39 +1938,50 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             await scraper.page.wait_for_function("document.readyState === 'complete'", timeout=10000)
             await asyncio.sleep(1)
         except Exception as e:
-            logger.warning(f"⚠️ DOM stabilization timeout: {str(e)}")
+            msg = f"DOM stabilization timeout: {str(e)}"
+            logger.warning(f"⚠️ {msg}")
+            errors.append(msg)
 
         logger.info("🪞 DOM ready for HTML extraction")
+
+        # Debug: save initial page screenshot
+        await _save_debug_screenshot(
+            scraper,
+            os.path.join(DEBUG_DIR, f"{request_id}_00_initial.png"),
+        )
 
         # Execute click operations if specified
         if request.click:
             logger.info(f"🖱️ Click operations requested: {len(request.click)} clicks")
-            await execute_clicks(scraper, request.click)
-            # Wait a bit more after all clicks are done
+            await execute_clicks(scraper, request.click, request_id=request_id, errors=errors)
             await asyncio.sleep(0.5)
             logger.info("✅ All click operations completed, proceeding with scraping")
 
         # Get HTML source code
         html_content = await scraper.page.content()
-        
+
         # Get proxy information
         proxy_info = scraper.get_current_proxy_info()
-        
+
         # Take screenshot if requested
         if request.take_screenshot:
             try:
                 screenshot_path = await scraper.take_screenshot(request_id)
                 logger.info(f"📸 Screenshot saved: {screenshot_path}")
             except Exception as e:
-                logger.error(f"❌ Screenshot failed: {str(e)}")
-        
+                msg = f"Screenshot failed: {str(e)}"
+                logger.error(f"❌ {msg}")
+                errors.append(msg)
+
         # Extract links if requested
         if request.extract_links:
             try:
                 links = await scraper.extract_links()
                 logger.info(f"🔗 Extracted {len(links)} links")
             except Exception as e:
-                logger.error(f"❌ Link extraction failed: {str(e)}")
+                msg = f"Link extraction failed: {str(e)}"
+                logger.error(f"❌ {msg}")
+                errors.append(msg)
         
         # Get debug HTML if requested
         debug_html = ""
@@ -1492,6 +1989,9 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             debug_html = html_content
             logger.info(f"🔍 Debug HTML: {len(debug_html)} chars")
         
+        # Store domain session on successful page load
+        await _store_domain_session(scraper, str(request.url))
+
         # Return scraper to pool
         await cleanup_scraper(scraper)
         
@@ -1507,15 +2007,13 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "screenshot_path": screenshot_path,
             "links": links,
-            "proxy_used": proxy_info
+            "proxy_used": proxy_info,
+            "errors": errors,
         }
-        
-        # Add debug_html only if debug is enabled
         if request.debug and debug_html:
             response["debug_html"] = debug_html
-            
         return response
-        
+
     except Exception as e:
         load_time = time.time() - start_time
         error_msg = f"HTML source extraction failed: {str(e)}"
@@ -1537,24 +2035,14 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             except:
                 pass
         
-        error_response = {
+        return {
             "success": False,
             "url": str(request.url),
-            "html_source": "",
-            "content_length": 0,
+            "error": error_msg,
             "load_time": load_time,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "error": error_msg,
-            "screenshot_path": screenshot_path,
-            "links": links,
-            "proxy_used": proxy_info
+            "proxy_used": proxy_info,
         }
-        
-        # Add debug_html only if debug is enabled
-        if request.debug and debug_html:
-            error_response["debug_html"] = debug_html
-            
-        return error_response
 
 async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
     """Unified scraping endpoint that supports both 'get' and 'collect' operations"""
@@ -1563,12 +2051,14 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
     debug_html = ""
     screenshot_path = None
     links = None
-    
+    errors: List[str] = []
+
     try:
         logger.info(f"🎯 Unified scraping request {request_id}: {request.url}")
-        
-        # Get scraper instance
-        scraper = await get_scraper()
+
+        # Get scraper instance (per-domain session + sticky proxy when available)
+        domain = _get_domain_from_url(str(request.url))
+        scraper = await get_scraper(domain=domain)
         
         # Configure proxy
         if request.use_proxy:
@@ -1586,56 +2076,71 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
         except Exception as e:
             error_msg = f"Failed to navigate to URL: {str(e)}"
             logger.error(f"❌ {error_msg}")
-            
-            # Return scraper to pool on error
+
+            # On navigation failure: test proxy, mark it as failed, and drop domain session
+            proxy_test = None
+            try:
+                if request.use_proxy:
+                    proxy_test = await _test_proxy_connectivity(scraper)
+            except Exception as proxy_err:
+                logger.error(f"❌ Proxy test failed: {proxy_err}")
+
+            try:
+                proxy_info = scraper.get_current_proxy_info()
+                if proxy_info and "url" in proxy_info:
+                    scraper.mark_proxy_failed(proxy_info["url"])
+            except Exception as mark_err:
+                logger.warning(f"⚠️ Could not mark proxy as failed: {mark_err}")
+
+            try:
+                domain = _get_domain_from_url(str(request.url))
+                if domain and domain in domain_sessions:
+                    domain_sessions.pop(domain, None)
+                    logger.info(f"🗑️ Dropped domain session for {domain} due to navigation failure")
+            except Exception:
+                pass
+
             try:
                 await cleanup_scraper(scraper)
-            except:
+            except Exception:
                 pass
-            
             return {
                 "success": False,
                 "url": str(request.url),
-                "data": {"get": {}, "collect": {}},
+                "error": error_msg,
                 "load_time": time.time() - start_time,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "error": error_msg,
-                "screenshot_path": None,
-                "links": None,
-                "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None
+                "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None,
+                "proxy_test": proxy_test,
             }
-        
+
         # Wait for element if specified
         if request.wait_for_element:
             logger.info(f"⏳ Waiting for element with timeout: {request.element_timeout}s")
-            # Note: wait_for_element method needs to be implemented in WebScraper
             await asyncio.sleep(request.element_timeout)
-        
+
         # Wait for page to load and optional wait_time
         try:
             await scraper.page.wait_for_load_state('domcontentloaded', timeout=10000)
         except Exception as e:
-            logger.warning(f"⚠️ DOM content loaded timeout: {str(e)}")
-            # Check if page is accessible
+            msg = f"DOM content loaded timeout: {str(e)}"
+            logger.warning(f"⚠️ {msg}")
+            errors.append(msg)
             try:
                 current_url = scraper.page.url
                 if "about:blank" in current_url or not current_url:
                     error_msg = f"Page failed to load: {str(e)}"
                     logger.error(f"❌ {error_msg}")
-                    
                     await cleanup_scraper(scraper)
                     return {
                         "success": False,
                         "url": str(request.url),
-                        "data": {"get": {}, "collect": {}},
+                        "error": error_msg,
                         "load_time": time.time() - start_time,
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "error": error_msg,
-                        "screenshot_path": None,
-                        "links": None,
-                        "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None
+                        "proxy_used": scraper.get_current_proxy_info() if hasattr(scraper, 'get_current_proxy_info') else None,
                     }
-            except:
+            except Exception:
                 pass
         
         if request.wait_time:
@@ -1644,34 +2149,33 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
 
         # JavaScript'in tam çalışmasını bekle ve sonra HTML'i al
         try:
-            # DOM'un stabil olmasını bekle
             await scraper.page.wait_for_function("document.readyState === 'complete'", timeout=10000)
-            # Ek olarak biraz daha bekle (JavaScript'in çalışması için)
             await asyncio.sleep(1)
         except Exception as e:
-            logger.warning(f"⚠️ DOM stabilizasyonu bekleme hatası: {str(e)}")
+            msg = f"DOM stabilizasyonu bekleme hatası: {str(e)}"
+            logger.warning(f"⚠️ {msg}")
+            errors.append(msg)
 
-        # DOM ready olduğunu log'la
         logger.info("🪞 DOM ready for scraping")
 
-        # Execute click operations if specified
+        await _save_debug_screenshot(
+            scraper,
+            os.path.join(DEBUG_DIR, f"{request_id}_00_initial.png"),
+        )
+
         if request.click:
             logger.info(f"🖱️ Click operations requested: {len(request.click)} clicks")
-            await execute_clicks(scraper, request.click)
-            # Wait a bit more after all clicks are done
+            await execute_clicks(scraper, request.click, request_id=request_id, errors=errors)
             await asyncio.sleep(0.5)
             logger.info("✅ All click operations completed, proceeding with scraping")
 
-        # Get proxy information
         proxy_info = scraper.get_current_proxy_info()
 
-        # Initialize response data
         response_data = {
             "get": {},
             "collect": {}
         }
-        
-        # Process 'get' operations
+
         if request.get:
             logger.info(f"📥 Processing {len(request.get)} 'get' operations")
             for key, config in request.get.items():
@@ -1689,59 +2193,62 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
                     
                     response_data["get"][key] = value
                     logger.info(f"✅ Extracted '{key}': {len(str(value))} chars")
-                    
                 except Exception as e:
-                    logger.error(f"❌ Failed to extract '{key}': {str(e)}")
+                    msg = f"Failed to extract '{key}': {str(e)}"
+                    logger.error(f"❌ {msg}")
+                    errors.append(msg)
                     response_data["get"][key] = ""
-        
-        # Process 'collect' operations
+
         if request.collect:
             logger.info(f"📋 Processing {len(request.collect)} 'collect' operations")
             for key, config in request.collect.items():
                 try:
                     selector = config["selector"]
                     fields = config.get("fields", {})
-                    
-                    # Use unified parser for collection extraction
                     items = await unified_parser(scraper, selector, operation_type="collection", fields=fields, debug=request.debug)
-                    
                     response_data["collect"][key] = items
                     logger.info(f"✅ Extracted '{key}': {len(items)} items")
-                    
                 except Exception as e:
-                    logger.error(f"❌ Failed to extract '{key}': {str(e)}")
+                    msg = f"Failed to extract '{key}': {str(e)}"
+                    logger.error(f"❌ {msg}")
+                    errors.append(msg)
                     response_data["collect"][key] = []
         
-        # Take screenshot if requested
         if request.take_screenshot:
             try:
                 screenshot_path = await scraper.take_screenshot(request_id)
                 logger.info(f"📸 Screenshot saved: {screenshot_path}")
             except Exception as e:
-                logger.error(f"❌ Screenshot failed: {str(e)}")
-        
-        # Extract links if requested
+                msg = f"Screenshot failed: {str(e)}"
+                logger.error(f"❌ {msg}")
+                errors.append(msg)
+
         if request.extract_links:
             try:
                 links = await scraper.extract_links()
                 logger.info(f"🔗 Extracted {len(links)} links")
             except Exception as e:
-                logger.error(f"❌ Link extraction failed: {str(e)}")
-        
-        # Get debug HTML if requested
+                msg = f"Link extraction failed: {str(e)}"
+                logger.error(f"❌ {msg}")
+                errors.append(msg)
+
         if request.debug:
             try:
                 debug_html = await scraper.page.content()
                 logger.info(f"🔍 Debug HTML: {len(debug_html)} chars")
             except Exception as e:
-                logger.error(f"❌ Debug HTML failed: {str(e)}")
-        
-        # Return scraper to pool
+                msg = f"Debug HTML failed: {str(e)}"
+                logger.error(f"❌ {msg}")
+                errors.append(msg)
+
+        # Store domain session on successful page load
+        await _store_domain_session(scraper, str(request.url))
+
         await cleanup_scraper(scraper)
-        
+
         load_time = time.time() - start_time
         logger.info(f"✅ Unified scraping completed {request_id}: {len(str(response_data))} chars in {load_time:.2f}s")
-        
+
         response = {
             "success": True,
             "url": str(request.url),
@@ -1750,52 +2257,39 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "screenshot_path": screenshot_path,
             "links": links,
-            "proxy_used": proxy_info
+            "proxy_used": proxy_info,
+            "errors": errors,
         }
-        
-        # Add debug_html only if debug is enabled
         if request.debug and debug_html:
             response["debug_html"] = debug_html
-            
         return response
-        
+
     except Exception as e:
         load_time = time.time() - start_time
         error_msg = f"Unified scraping failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
-        
-        # Return scraper to pool on error
+
         try:
             await cleanup_scraper(scraper)
-        except:
+        except Exception:
             pass
-        
-        # Get proxy info even on error
+
         proxy_info = None
         scraper_var = locals().get('scraper')
         if scraper_var:
             try:
                 proxy_info = scraper_var.get_current_proxy_info()
-            except:
+            except Exception:
                 pass
-        
-        error_response = {
+
+        return {
             "success": False,
             "url": str(request.url),
-            "data": {"get": {}, "collect": {}},
+            "error": error_msg,
             "load_time": load_time,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "error": error_msg,
-            "screenshot_path": screenshot_path,
-            "links": links,
-            "proxy_used": proxy_info
+            "proxy_used": proxy_info,
         }
-        
-        # Add debug_html only if debug is enabled
-        if request.debug and debug_html:
-            error_response["debug_html"] = debug_html
-            
-        return error_response
 
 async def scrape_legacy(request: ScrapeRequest, api_key: str):
     """Legacy scraping endpoint for backward compatibility"""
@@ -1805,8 +2299,9 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
     logger.info(f"📡 Legacy scraping request {request_id}: {request.url} (API Key: {api_key[:20]}...)")
     
     try:
-        # Get scraper instance
-        scraper = await get_scraper()
+        # Get scraper instance (per-domain session + sticky proxy when available)
+        domain = _get_domain_from_url(str(request.url))
+        scraper = await get_scraper(domain=domain)
         
         # Configure proxy
         if request.use_proxy:
@@ -1824,13 +2319,36 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
         except Exception as e:
             error_msg = f"Failed to navigate to URL: {str(e)}"
             logger.error(f"❌ {error_msg}")
-            
+
+            # On navigation failure: test proxy, mark it as failed, and drop domain session
+            proxy_test = None
+            try:
+                if request.use_proxy:
+                    proxy_test = await _test_proxy_connectivity(scraper)
+            except Exception as proxy_err:
+                logger.error(f"❌ Proxy test failed: {proxy_err}")
+
+            try:
+                proxy_info = scraper.get_current_proxy_info()
+                if proxy_info and "url" in proxy_info:
+                    scraper.mark_proxy_failed(proxy_info["url"])
+            except Exception as mark_err:
+                logger.warning(f"⚠️ Could not mark proxy as failed: {mark_err}")
+
+            try:
+                domain = _get_domain_from_url(str(request.url))
+                if domain and domain in domain_sessions:
+                    domain_sessions.pop(domain, None)
+                    logger.info(f"🗑️ Dropped domain session for {domain} due to navigation failure")
+            except Exception:
+                pass
+
             # Return scraper to pool on error
             try:
                 await cleanup_scraper(scraper)
             except:
                 pass
-            
+
             return {
                 "success": False,
                 "url": str(request.url),
@@ -1842,6 +2360,7 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
                 "images": None,
                 "screenshot_path": None,
                 "proxy_used": None,
+                "proxy_test": proxy_test,
                 "ip_address": None,
                 "load_time": time.time() - start_time,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1911,6 +2430,9 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
         # Return to original URL
         await scraper.navigate_to_url(str(request.url))
         
+        # Store domain session on successful page load
+        await _store_domain_session(scraper, str(request.url))
+
         # Return scraper to pool
         await cleanup_scraper(scraper)
         

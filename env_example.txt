@@ -52,3 +52,7 @@ USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 # Default scraping settings
 DEFAULT_WAIT_TIME=5000
 MAX_RETRIES=3
+
+# Stealth mode (optional): reduce bot detection on challenge pages
+# Set to true to enable playwright-stealth for browser contexts
+USE_STEALTH=false

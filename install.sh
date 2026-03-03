@@ -181,8 +181,9 @@ check_python_packages() {
     
     if [[ -f "$REQUIREMENTS_FILE" ]]; then
         # Check if packages are installed in current environment
-        if python -c "import fastapi, playwright, aiohttp, bs4, socks" 2>/dev/null; then
-            log_success "Core Python packages already installed"
+        # Include playwright_stealth and Pillow here so missing extras trigger a reinstall
+        if python -c "import fastapi, playwright, aiohttp, bs4, socks, playwright_stealth, PIL" 2>/dev/null; then
+            log_success "Core Python packages (incl. playwright-stealth & Pillow) already installed"
             return 0
         else
             log_info "Python packages need to be installed"
@@ -476,9 +477,9 @@ install_python_deps() {
         return 0
     fi
     
-    # Install requirements
+    # Install requirements (includes playwright-stealth for optional USE_STEALTH)
     pip install -r "$REQUIREMENTS_FILE"
-    log_success "Python dependencies installed"
+    log_success "Python dependencies installed (incl. playwright-stealth)"
 }
 
 # Install Playwright browsers
@@ -539,6 +540,9 @@ PROXY_LIST=http://proxy1:8080,http://proxy2:8080
 
 # API Security
 VALID_API_KEYS=sk-demo-key-12345,sk-test-key-67890
+
+# Stealth mode (optional)
+USE_STEALTH=false
 EOF
         log_success "Default environment file created: $ENV_FILE"
     fi
@@ -615,6 +619,13 @@ test_installation() {
     else
         log_warning "Playwright import test failed - this is normal if system dependencies are missing"
     fi
+
+    # Optional: playwright-stealth (for USE_STEALTH / Cloudflare)
+    if python -c "from playwright_stealth import Stealth; print('Stealth available')" 2>/dev/null; then
+        log_success "playwright-stealth installed (set USE_STEALTH=true in .env to enable)"
+    else
+        log_warning "playwright-stealth not found - pip install playwright-stealth if you need it"
+    fi
     
     log_success "Installation test completed"
 }
@@ -630,6 +641,9 @@ show_completion() {
     echo
     echo -e "2. ${YELLOW}Start the API server:${NC}"
     echo -e "   ${BLUE}./start.sh${NC}"
+    echo
+    echo -e "   ${CYAN}Optional (Cloudflare / bot detection):${NC}"
+    echo -e "   Add ${BLUE}USE_STEALTH=true${NC} to .env to enable playwright-stealth."
     echo
     echo -e "3. ${YELLOW}Test the installation:${NC}"
     echo -e "   ${BLUE}# For HTTPS (self-signed certificate - use -k to ignore SSL verification)${NC}"

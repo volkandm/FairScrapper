@@ -63,6 +63,10 @@ temp/
 tmp/
 *.tmp
 
+# Debug folder: keep directory in git, ignore contents
+debug/*
+!debug/.gitkeep
+
 # Proxy files (deprecated)
 working_proxies.json
 proxy_list.json
