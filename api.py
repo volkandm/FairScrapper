@@ -220,6 +220,15 @@ async def _attach_debug_video(scraper: WebScraper, request_id: str) -> Optional[
         if not video:
             return None
 
+        # IMPORTANT: Playwright only finalizes the video file after the page is closed.
+        # Close page here (cleanup_scraper is tolerant to already-closed pages).
+        try:
+            if hasattr(page, "is_closed") and not page.is_closed():
+                logger.info("🎥 Closing page to finalize debug video")
+                await page.close()
+        except Exception as e:
+            logger.warning(f"⚠️ Could not close page before video export: {e}")
+
         _ensure_debug_dir()
         _cleanup_old_debug_files()
 
