@@ -2002,10 +2002,14 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
             # Collect all debug files for this request id (screenshots + HTML)
             try:
                 _ensure_debug_dir()
-                base_url = str(http_request.base_url).rstrip("/")
+                base_url = str(http_request.base_url).rstrip("/") if http_request else ""
                 prefix = f"{request_id}_"
                 debug_files = sorted(
-                    f"{base_url}/debug/{name}"
+                    (
+                        f"{base_url}/debug/{name}?api_key={api_key}"
+                        if base_url
+                        else f"/debug/{name}?api_key={api_key}"
+                    )
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix)
                 )
@@ -2278,10 +2282,14 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             # Collect all debug files for this request id (screenshots + HTML)
             try:
                 _ensure_debug_dir()
-                base_url = str(http_request.base_url).rstrip("/")
+                base_url = str(http_request.base_url).rstrip("/") if http_request else ""
                 prefix = f"{request_id}_"
                 debug_files = sorted(
-                    f"{base_url}/debug/{name}"
+                    (
+                        f"{base_url}/debug/{name}?api_key={api_key}"
+                        if base_url
+                        else f"/debug/{name}?api_key={api_key}"
+                    )
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix)
                 )
@@ -2603,19 +2611,32 @@ async def test_proxy(
 @app.get("/debug/{filename}")
 async def get_debug_file(
     filename: str,
-    api_key: str = Depends(verify_api_key),
+    api_key: str,
 ):
     """
     Serve debug files (screenshots & HTML) generated when debug=true.
     `debug_files` entries in responses are URLs pointing to this endpoint.
     """
+    # Simple API key check via query parameter
+    if api_key not in VALID_API_KEYS:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
     safe_name = os.path.basename(filename)
     file_path = os.path.join(DEBUG_DIR, safe_name)
 
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="Debug file not found")
 
-    return FileResponse(file_path)
+    # Inline display: choose media type by extension
+    media_type = None
+    if file_path.endswith(".png"):
+        media_type = "image/png"
+    elif file_path.endswith(".jpg") or file_path.endswith(".jpeg"):
+        media_type = "image/jpeg"
+    elif file_path.endswith(".html") or file_path.endswith(".htm"):
+        media_type = "text/html"
+
+    return FileResponse(file_path, media_type=media_type)
 
 # Duplicate function removed - using unified_parser instead
 
