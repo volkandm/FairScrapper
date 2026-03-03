@@ -21,8 +21,8 @@ Support this project:
 """
 
 import os
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, HttpUrl
 import asyncio
 import json
@@ -1833,7 +1833,7 @@ async def execute_clicks(
     logger.info(f"✅ All click operations completed")
     return True
 
-async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
+async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_request: Request):
     """Simple HTML source code scraping endpoint"""
     request_id = str(uuid.uuid4())[:8]
     start_time = time.time()
@@ -2001,9 +2001,10 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             # Collect all debug files for this request id (screenshots + HTML)
             try:
                 _ensure_debug_dir()
+                base_url = str(http_request.base_url).rstrip("/")
                 prefix = f"{request_id}_"
                 debug_files = sorted(
-                    os.path.join(DEBUG_DIR, name)
+                    f"{base_url}/debug/{name}"
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix)
                 )
@@ -2067,7 +2068,7 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             "proxy_used": proxy_info,
         }
 
-async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
+async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_request: Request):
     """Unified scraping endpoint that supports both 'get' and 'collect' operations"""
     request_id = str(uuid.uuid4())[:8]
     start_time = time.time()
@@ -2276,9 +2277,10 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
             # Collect all debug files for this request id (screenshots + HTML)
             try:
                 _ensure_debug_dir()
+                base_url = str(http_request.base_url).rstrip("/")
                 prefix = f"{request_id}_"
                 debug_files = sorted(
-                    os.path.join(DEBUG_DIR, name)
+                    f"{base_url}/debug/{name}"
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix)
                 )
@@ -2595,6 +2597,24 @@ async def test_proxy(
             "working": False,
             "error": f"Proxy test failed: {str(e)}"
         }
+
+
+@app.get("/debug/{filename}")
+async def get_debug_file(
+    filename: str,
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Serve debug files (screenshots & HTML) generated when debug=true.
+    `debug_files` entries in responses are URLs pointing to this endpoint.
+    """
+    safe_name = os.path.basename(filename)
+    file_path = os.path.join(DEBUG_DIR, safe_name)
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Debug file not found")
+
+    return FileResponse(file_path)
 
 # Duplicate function removed - using unified_parser instead
 
