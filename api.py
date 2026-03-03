@@ -261,7 +261,6 @@ async def _record_debug_frames(
     request_id: str,
     stop_event: asyncio.Event,
     fps: int = 2,
-    max_frames: int = 300,
 ) -> None:
     """
     Background task: capture frames at given fps while stop_event is not set.
@@ -276,7 +275,7 @@ async def _record_debug_frames(
     logger.info(f"🎥 Starting debug frame recording at {fps} fps")
 
     try:
-        while not stop_event.is_set() and frame_index < max_frames:
+        while not stop_event.is_set():
             filename = os.path.join(DEBUG_DIR, f"{request_id}_frame_{frame_index:04d}.png")
             await _save_debug_frame(scraper, filename)
             frame_index += 1
