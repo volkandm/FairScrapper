@@ -225,7 +225,7 @@ class WebScraper:
                 args=browser_args
             )
             
-            # Create context with proxy and optional storage state
+            # Create context with proxy, optional storage state, and video recording (for debug)
             context_kwargs: Dict[str, Any] = {
                 "proxy": proxy_config,
                 "viewport": {"width": 1920, "height": 1080},
@@ -233,6 +233,15 @@ class WebScraper:
             }
             if storage_state:
                 context_kwargs["storage_state"] = storage_state
+
+            # Always enable video recording to debug dir; actual usage is controlled from API via debug flag.
+            try:
+                debug_dir = "debug"
+                os.makedirs(debug_dir, exist_ok=True)
+                context_kwargs["record_video_dir"] = debug_dir
+                context_kwargs["record_video_size"] = {"width": 1920, "height": 1080}
+            except Exception as e:
+                logger.warning(f"Could not enable video recording: {e}")
 
             self.context = await self.browser.new_context(**context_kwargs)
 

@@ -206,6 +206,46 @@ async def _wait_for_page_ready(scraper: WebScraper, label: str = "") -> None:
     logger.info(f"✅ Page ready wait finished{ctx}")
 
 
+async def _attach_debug_video(scraper: WebScraper, request_id: str) -> Optional[str]:
+    """
+    Save Playwright's recorded video for the current page into debug dir
+    with a deterministic name, and return the path.
+    """
+    try:
+        if not scraper or not getattr(scraper, "page", None):
+            return None
+
+        page = scraper.page
+        video = getattr(page, "video", None)
+        if not video:
+            return None
+
+        _ensure_debug_dir()
+        _cleanup_old_debug_files()
+
+        try:
+            tmp_path = await video.path()
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get video path: {e}")
+            return None
+
+        if not tmp_path:
+            return None
+
+        new_path = os.path.join(DEBUG_DIR, f"{request_id}_video.webm")
+        try:
+            os.replace(tmp_path, new_path)
+        except Exception:
+            # If rename fails, keep original path
+            new_path = tmp_path
+
+        logger.info(f"🎥 Debug video saved: {new_path}")
+        return new_path
+    except Exception as e:
+        logger.warning(f"⚠️ Debug video capture failed: {e}")
+        return None
+
+
 async def _save_debug_html(scraper: WebScraper, html_path: str) -> Optional[str]:
     """Save current page HTML to html_path (e.g. debug/abc123_00_initial.html). Same base name as screenshot."""
     if not scraper or not scraper.page:
@@ -2003,6 +2043,11 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
             if final_path:
                 debug_files.append(final_path)
 
+            # Attach debug video if available
+            video_path = await _attach_debug_video(scraper, request_id)
+            if video_path:
+                debug_files.append(video_path)
+
         # Get proxy information
         proxy_info = scraper.get_current_proxy_info()
 
@@ -2314,7 +2359,12 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             if final_path:
                 debug_files.append(final_path)
 
-            # Collect all debug files for this request id (screenshots + HTML)
+            # Attach debug video if available
+            video_path = await _attach_debug_video(scraper, request_id)
+            if video_path:
+                debug_files.append(video_path)
+
+            # Collect all debug files for this request id (screenshots + HTML + video)
             try:
                 _ensure_debug_dir()
                 base_url = str(http_request.base_url).rstrip("/") if http_request else ""
