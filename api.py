@@ -1971,6 +1971,15 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
         # Get HTML source code
         html_content = await scraper.page.content()
 
+        # Final debug snapshot after all operations (only when debug=true)
+        if request.debug:
+            final_path = await _save_debug_screenshot(
+                scraper,
+                os.path.join(DEBUG_DIR, f"{request_id}_99_final.png"),
+            )
+            if final_path:
+                debug_files.append(final_path)
+
         # Get proxy information
         proxy_info = scraper.get_current_proxy_info()
 
@@ -2279,6 +2288,15 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                 msg = f"Debug HTML failed: {str(e)}"
                 logger.error(f"❌ {msg}")
                 errors.append(msg)
+
+            # Final debug snapshot after all operations
+            final_path = await _save_debug_screenshot(
+                scraper,
+                os.path.join(DEBUG_DIR, f"{request_id}_99_final.png"),
+            )
+            if final_path:
+                debug_files.append(final_path)
+
             # Collect all debug files for this request id (screenshots + HTML)
             try:
                 _ensure_debug_dir()
