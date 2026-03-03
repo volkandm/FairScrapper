@@ -299,6 +299,7 @@ class UnifiedScrapeResponse(BaseModel):
     debug_html: str = ""
     screenshot_path: Optional[str] = None
     links: Optional[List[str]] = None
+    debug_files: Optional[List[str]] = None
 
 # Request/Response models
 class ScrapeRequest(BaseModel):
@@ -1839,6 +1840,7 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
     screenshot_path = None
     links = None
     errors: List[str] = []
+    debug_files: List[str] = []
 
     try:
         logger.info(f"📄 HTML source request {request_id}: {request.url}")
@@ -1944,16 +1946,24 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
 
         logger.info("🪞 DOM ready for HTML extraction")
 
-        # Debug: save initial page screenshot
-        await _save_debug_screenshot(
-            scraper,
-            os.path.join(DEBUG_DIR, f"{request_id}_00_initial.png"),
-        )
+        # Debug: save initial page screenshot (only when debug=true)
+        if request.debug:
+            first_path = await _save_debug_screenshot(
+                scraper,
+                os.path.join(DEBUG_DIR, f"{request_id}_00_initial.png"),
+            )
+            if first_path:
+                debug_files.append(first_path)
 
         # Execute click operations if specified
         if request.click:
             logger.info(f"🖱️ Click operations requested: {len(request.click)} clicks")
-            await execute_clicks(scraper, request.click, request_id=request_id, errors=errors)
+            await execute_clicks(
+                scraper,
+                request.click,
+                request_id=request_id if request.debug else None,
+                errors=errors,
+            )
             await asyncio.sleep(0.5)
             logger.info("✅ All click operations completed, proceeding with scraping")
 
@@ -1983,11 +1993,22 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
                 logger.error(f"❌ {msg}")
                 errors.append(msg)
         
-        # Get debug HTML if requested
+        # Get debug HTML and file list if requested
         debug_html = ""
         if request.debug:
             debug_html = html_content
             logger.info(f"🔍 Debug HTML: {len(debug_html)} chars")
+            # Collect all debug files for this request id (screenshots + HTML)
+            try:
+                _ensure_debug_dir()
+                prefix = f"{request_id}_"
+                debug_files = sorted(
+                    os.path.join(DEBUG_DIR, name)
+                    for name in os.listdir(DEBUG_DIR)
+                    if name.startswith(prefix)
+                )
+            except Exception:
+                debug_files = debug_files or []
         
         # Store domain session on successful page load
         await _store_domain_session(scraper, str(request.url))
@@ -2010,8 +2031,10 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str):
             "proxy_used": proxy_info,
             "errors": errors,
         }
-        if request.debug and debug_html:
-            response["debug_html"] = debug_html
+        if request.debug:
+            if debug_html:
+                response["debug_html"] = debug_html
+            response["debug_files"] = debug_files
         return response
 
     except Exception as e:
@@ -2052,6 +2075,7 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
     screenshot_path = None
     links = None
     errors: List[str] = []
+    debug_files: List[str] = []
 
     try:
         logger.info(f"🎯 Unified scraping request {request_id}: {request.url}")
@@ -2158,14 +2182,23 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
 
         logger.info("🪞 DOM ready for scraping")
 
-        await _save_debug_screenshot(
-            scraper,
-            os.path.join(DEBUG_DIR, f"{request_id}_00_initial.png"),
-        )
+        # Debug: save initial screenshot only when debug=true
+        if request.debug:
+            first_path = await _save_debug_screenshot(
+                scraper,
+                os.path.join(DEBUG_DIR, f"{request_id}_00_initial.png"),
+            )
+            if first_path:
+                debug_files.append(first_path)
 
         if request.click:
             logger.info(f"🖱️ Click operations requested: {len(request.click)} clicks")
-            await execute_clicks(scraper, request.click, request_id=request_id, errors=errors)
+            await execute_clicks(
+                scraper,
+                request.click,
+                request_id=request_id if request.debug else None,
+                errors=errors,
+            )
             await asyncio.sleep(0.5)
             logger.info("✅ All click operations completed, proceeding with scraping")
 
@@ -2240,7 +2273,17 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
                 msg = f"Debug HTML failed: {str(e)}"
                 logger.error(f"❌ {msg}")
                 errors.append(msg)
-
+            # Collect all debug files for this request id (screenshots + HTML)
+            try:
+                _ensure_debug_dir()
+                prefix = f"{request_id}_"
+                debug_files = sorted(
+                    os.path.join(DEBUG_DIR, name)
+                    for name in os.listdir(DEBUG_DIR)
+                    if name.startswith(prefix)
+                )
+            except Exception:
+                debug_files = debug_files or []
         # Store domain session on successful page load
         await _store_domain_session(scraper, str(request.url))
 
@@ -2260,8 +2303,10 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str):
             "proxy_used": proxy_info,
             "errors": errors,
         }
-        if request.debug and debug_html:
-            response["debug_html"] = debug_html
+        if request.debug:
+            if debug_html:
+                response["debug_html"] = debug_html
+            response["debug_files"] = debug_files
         return response
 
     except Exception as e:
