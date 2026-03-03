@@ -21,6 +21,7 @@ Support this project:
 """
 
 import os
+import subprocess
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, HttpUrl
@@ -255,7 +256,13 @@ async def _attach_debug_video(scraper: WebScraper, request_id: str) -> Optional[
         return None
 
 
-async def _record_debug_frames(scraper: WebScraper, request_id: str, stop_event: asyncio.Event, fps: int = 10) -> None:
+async def _record_debug_frames(
+    scraper: WebScraper,
+    request_id: str,
+    stop_event: asyncio.Event,
+    fps: int = 2,
+    max_frames: int = 300,
+) -> None:
     """
     Background task: capture frames at given fps while stop_event is not set.
     Frames are saved as PNGs: debug/{request_id}_frame_XXXX.png
@@ -269,7 +276,7 @@ async def _record_debug_frames(scraper: WebScraper, request_id: str, stop_event:
     logger.info(f"🎥 Starting debug frame recording at {fps} fps")
 
     try:
-        while not stop_event.is_set():
+        while not stop_event.is_set() and frame_index < max_frames:
             filename = os.path.join(DEBUG_DIR, f"{request_id}_frame_{frame_index:04d}.png")
             await _save_debug_frame(scraper, filename)
             frame_index += 1
@@ -282,6 +289,73 @@ async def _record_debug_frames(scraper: WebScraper, request_id: str, stop_event:
         logger.warning(f"⚠️ Debug frame recorder error: {e}")
     finally:
         logger.info(f"🎥 Debug frame recording stopped after {frame_index} frames")
+
+
+def _build_debug_video_from_frames(request_id: str, fps: int = 2) -> Optional[str]:
+    """
+    Build a .webm debug video from recorded PNG frames using ffmpeg.
+    If ffmpeg is not available or fails, returns None.
+    """
+    try:
+        _ensure_debug_dir()
+        pattern = os.path.join(DEBUG_DIR, f"{request_id}_frame_%04d.png")
+        output = os.path.join(DEBUG_DIR, f"{request_id}_video.webm")
+
+        # Check if there is at least one frame to avoid pointless ffmpeg call
+        has_frame = any(
+            name.startswith(f"{request_id}_frame_") and name.endswith(".png")
+            for name in os.listdir(DEBUG_DIR)
+        )
+        if not has_frame:
+            return None
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-framerate",
+            str(fps),
+            "-i",
+            pattern,
+            "-c:v",
+            "libvpx-vp9",
+            "-pix_fmt",
+            "yuv420p",
+            output,
+        ]
+
+        logger.info(f"🎥 Building debug video via ffmpeg: {' '.join(cmd)}")
+        try:
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ ffmpeg execution failed: {e}")
+            return None
+
+        if not os.path.isfile(output):
+            logger.warning("⚠️ ffmpeg did not produce debug video file")
+            return None
+
+        # Optionally clean up frame PNGs to keep debug dir small
+        removed = 0
+        for name in list(os.listdir(DEBUG_DIR)):
+            if name.startswith(f"{request_id}_frame_") and name.endswith(".png"):
+                try:
+                    os.remove(os.path.join(DEBUG_DIR, name))
+                    removed += 1
+                except Exception:
+                    continue
+        if removed:
+            logger.info(f"🧹 Removed {removed} debug frame PNGs for request {request_id}")
+
+        logger.info(f"🎥 Debug video created: {output}")
+        return output
+    except Exception as e:
+        logger.warning(f"⚠️ Could not build debug video from frames: {e}")
+        return None
 
 
 async def _save_debug_html(scraper: WebScraper, html_path: str) -> Optional[str]:
@@ -2149,7 +2223,7 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
                         else f"/debug/{name}?api_key={api_key}"
                     )
                     for name in os.listdir(DEBUG_DIR)
-                    if name.startswith(prefix)
+                    if name.startswith(prefix) and "_frame_" not in name
                 )
             except Exception:
                 debug_files = debug_files or []
@@ -2448,7 +2522,12 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             if final_path:
                 debug_files.append(final_path)
 
-            # Collect all debug files for this request id (screenshots + HTML + video)
+            # Build debug video from frames if possible
+            video_path = _build_debug_video_from_frames(request_id, fps=2)
+            if video_path:
+                debug_files.append(video_path)
+
+            # Collect all debug files for this request id (screenshots + HTML + video, no raw frames)
             try:
                 _ensure_debug_dir()
                 base_url = str(http_request.base_url).rstrip("/") if http_request else ""
@@ -2460,7 +2539,7 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                         else f"/debug/{name}?api_key={api_key}"
                     )
                     for name in os.listdir(DEBUG_DIR)
-                    if name.startswith(prefix)
+                    if name.startswith(prefix) and "_frame_" not in name
                 )
             except Exception:
                 debug_files = debug_files or []
