@@ -463,6 +463,69 @@ install_system_deps() {
     log_info "System dependency installation completed (some packages may have failed)"
 }
 
+# Check if ffmpeg is installed
+check_ffmpeg() {
+    log_step "Checking ffmpeg..."
+    if command -v ffmpeg &> /dev/null; then
+        log_success "ffmpeg already installed"
+        return 0
+    fi
+    log_info "ffmpeg not found"
+    return 1
+}
+
+# Install ffmpeg (optional, for debug video support)
+install_ffmpeg() {
+    log_step "Installing ffmpeg (optional, for debug video)..."
+
+    if check_ffmpeg; then
+        return 0
+    fi
+
+    if [[ "$OS" == "linux" ]]; then
+        if command -v apt-get &> /dev/null; then
+            log_info "Installing ffmpeg via apt-get..."
+            if sudo apt-get update && sudo apt-get install -y ffmpeg; then
+                log_success "ffmpeg installed via apt-get"
+                return 0
+            else
+                log_warning "Failed to install ffmpeg via apt-get"
+            fi
+        elif command -v yum &> /dev/null; then
+            log_info "Installing ffmpeg via yum..."
+            if sudo yum install -y ffmpeg; then
+                log_success "ffmpeg installed via yum"
+                return 0
+            else
+                log_warning "Failed to install ffmpeg via yum"
+            fi
+        elif command -v dnf &> /dev/null; then
+            log_info "Installing ffmpeg via dnf..."
+            if sudo dnf install -y ffmpeg; then
+                log_success "ffmpeg installed via dnf"
+                return 0
+            else
+                log_warning "Failed to install ffmpeg via dnf"
+            fi
+        fi
+    elif [[ "$OS" == "macos" ]]; then
+        if command -v brew &> /dev/null; then
+            log_info "Installing ffmpeg via Homebrew..."
+            if brew install ffmpeg; then
+                log_success "ffmpeg installed via Homebrew"
+                return 0
+            else
+                log_warning "Failed to install ffmpeg via Homebrew"
+            fi
+        else
+            log_warning "Homebrew not found; install ffmpeg manually if you need debug video"
+        fi
+    fi
+
+    log_warning "ffmpeg installation skipped or failed; debug video will not work until ffmpeg is installed"
+    return 1
+}
+
 # Install Python dependencies
 install_python_deps() {
     log_step "Installing Python dependencies..."
@@ -712,6 +775,9 @@ main() {
     
     # Install system dependencies (only if needed)
     install_system_deps
+
+    # Install ffmpeg for debug video support (best-effort)
+    install_ffmpeg
     
     # Install Python dependencies (only if needed)
     install_python_deps
