@@ -260,7 +260,7 @@ async def _record_debug_frames(
     scraper: WebScraper,
     request_id: str,
     stop_event: asyncio.Event,
-    fps: int = 2,
+    fps: int = 1,
 ) -> None:
     """
     Background task: capture frames at given fps while stop_event is not set.
@@ -290,7 +290,7 @@ async def _record_debug_frames(
         logger.info(f"🎥 Debug frame recording stopped after {frame_index} frames")
 
 
-def _build_debug_video_from_frames(request_id: str, fps: int = 2) -> Optional[str]:
+def _build_debug_video_from_frames(request_id: str, fps: int = 1) -> Optional[str]:
     """
     Build a .webm debug video from recorded PNG frames using ffmpeg.
     If ffmpeg is not available or fails, returns None.
@@ -355,6 +355,15 @@ def _build_debug_video_from_frames(request_id: str, fps: int = 2) -> Optional[st
     except Exception as e:
         logger.warning(f"⚠️ Could not build debug video from frames: {e}")
         return None
+
+
+async def _build_debug_video_from_frames_async(request_id: str, fps: int = 1) -> None:
+    """Async wrapper to run ffmpeg in a background thread."""
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _build_debug_video_from_frames, request_id, fps)
+    except Exception as e:
+        logger.warning(f"⚠️ Async video build failed: {e}")
 
 
 async def _save_debug_html(scraper: WebScraper, html_path: str) -> Optional[str]:
@@ -2224,6 +2233,15 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix) and "_frame_" not in name
                 )
+                # Always include expected video URL even if ffmpeg is still running
+                video_name = f"{request_id}_video.webm"
+                video_url = (
+                    f"{base_url}/debug/{video_name}?api_key={api_key}"
+                    if base_url
+                    else f"/debug/{video_name}?api_key={api_key}"
+                )
+                if video_url not in debug_files:
+                    debug_files.append(video_url)
             except Exception:
                 debug_files = debug_files or []
         
@@ -2521,10 +2539,11 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             if final_path:
                 debug_files.append(final_path)
 
-            # Build debug video from frames if possible
-            video_path = _build_debug_video_from_frames(request_id, fps=2)
-            if video_path:
-                debug_files.append(video_path)
+            # Kick off debug video build in background (do not wait)
+            try:
+                asyncio.create_task(_build_debug_video_from_frames_async(request_id, fps=1))
+            except Exception as e:
+                logger.warning(f"⚠️ Could not schedule async video build: {e}")
 
             # Collect all debug files for this request id (screenshots + HTML + video, no raw frames)
             try:
@@ -2540,6 +2559,15 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix) and "_frame_" not in name
                 )
+                # Always include expected video URL even if ffmpeg is still running
+                video_name = f"{request_id}_video.webm"
+                video_url = (
+                    f"{base_url}/debug/{video_name}?api_key={api_key}"
+                    if base_url
+                    else f"/debug/{video_name}?api_key={api_key}"
+                )
+                if video_url not in debug_files:
+                    debug_files.append(video_url)
             except Exception:
                 debug_files = debug_files or []
         # Store domain session on successful page load
