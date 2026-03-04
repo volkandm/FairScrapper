@@ -22,6 +22,7 @@ Support this project:
 
 import os
 import subprocess
+import random
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, HttpUrl
@@ -254,6 +255,27 @@ async def _attach_debug_video(scraper: WebScraper, request_id: str) -> Optional[
     except Exception as e:
         logger.warning(f"⚠️ Debug video capture failed: {e}")
         return None
+
+
+async def _random_mouse_drift(scraper: WebScraper, label: str = "") -> None:
+    """
+    Move mouse to a random point on the viewport to look more human.
+    Used after clicks.
+    """
+    try:
+        if not scraper or not getattr(scraper, "page", None):
+            return
+        page = scraper.page
+        width, height = 1920, 1080
+        dest_x = random.randint(0, width - 1)
+        dest_y = random.randint(0, height - 1)
+        steps = random.randint(8, 20)
+        await asyncio.sleep(random.uniform(0.05, 0.2))
+        await page.mouse.move(dest_x, dest_y, steps=steps)
+        logger.info(f"🖱️ Mouse drifted to ({dest_x}, {dest_y}) {f'({label})' if label else ''}")
+    except Exception:
+        # Mouse drift is best-effort; never fail the main flow
+        pass
 
 
 async def _record_debug_frames(
@@ -1883,15 +1905,29 @@ async def execute_clicks(
                     except Exception:
                         pass
                     current_url_before = scraper.page.url
-                    # Move mouse to coordinate first (more "human-like"), then click
+
+                    # Human-like mouse approach to target
                     try:
-                        await scraper.page.mouse.move(x, y, steps=10)
+                        page = scraper.page
+                        width, height = 1920, 1080
+                        # A few jitter moves around the target
+                        for _ in range(random.randint(1, 3)):
+                            jitter_x = max(0, min(width - 1, x + random.randint(-80, 80)))
+                            jitter_y = max(0, min(height - 1, y + random.randint(-40, 40)))
+                            await page.mouse.move(jitter_x, jitter_y, steps=random.randint(5, 12))
+                            await asyncio.sleep(random.uniform(0.05, 0.2))
+                        # Final move to exact coordinate
+                        await page.mouse.move(x, y, steps=random.randint(8, 16))
                     except Exception:
                         # If move fails, still attempt direct click
                         pass
-                    await scraper.page.mouse.click(x, y)
+
+                    await scraper.page.mouse.click(x, y, delay=random.randint(50, 150))
                     clicked = True
                     logger.info(f"✅ Coordinate click at ({x}, {y})")
+
+                    # After coordinate click, move mouse away to a random point
+                    await _random_mouse_drift(scraper, label=f"after coordinate click {click_index}")
                 except Exception as e:
                     error_msg = str(e)
                     if 'EPIPE' in error_msg or ('browser' in error_msg.lower() and 'closed' in error_msg.lower()):
@@ -2012,6 +2048,10 @@ async def execute_clicks(
                 if errors is not None:
                     errors.append(msg)
                 # Continue anyway - page might still be usable
+
+            # Mouse drift to random point after any successful click
+            if clicked:
+                await _random_mouse_drift(scraper, label=f"after click {click_index}")
 
             logger.info(f"✅ Click {click_index}/{total_clicks} completed successfully")
 
