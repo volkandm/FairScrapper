@@ -47,8 +47,8 @@ VALID_API_KEYS = os.getenv('VALID_API_KEYS', 'sk-demo-key-12345').split(',')
 DEBUG_DIR = "debug"
 DEBUG_MAX_AGE_DAYS = 5
 
-# Domain sessions: keep per-domain storage_state + sticky proxy for 1 day
-SESSION_TTL_SECONDS = 24 * 60 * 60  # 1 day
+# Domain sessions: keep per-domain storage_state + sticky proxy for 30 days
+SESSION_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 domain_sessions: Dict[str, Dict[str, Any]] = {}
 
 
