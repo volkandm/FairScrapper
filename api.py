@@ -1358,7 +1358,11 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
     for field_name, config in field_configs.items():
         field_selector = config['selector']
         attr = config['attr']
-        
+        # "(text)" parses to selector="" and attr="text" -> treat as element's own text (avoid querySelector(''))
+        if (field_selector == "" or (not field_selector.strip())) and attr == "text":
+            field_selector = "text"
+            attr = None
+
         if field_selector == "text":
             # Extract text from the element itself
             js_code_parts.append(f'''
@@ -1546,8 +1550,12 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                     result["{field_name}"] = "";
                 ''')
         elif attr:
-            # Extract attribute
-            if field_selector == "a" and attr == "href":
+            # Extract attribute (never use empty selector in querySelector)
+            if (not field_selector or not field_selector.strip()) and attr == "text":
+                js_code_parts.append(f'''
+                    result["{field_name}"] = (element.innerText || element.textContent || "").trim();
+                ''')
+            elif field_selector == "a" and attr == "href":
                 # Special case for href attribute - get from the element itself
                 js_code_parts.append(f'''
                     result["{field_name}"] = element.getAttribute("href") || "";
@@ -1557,6 +1565,11 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 js_code_parts.append(f'''
                     result["{field_name}"] = element.getAttribute("href") || "";
                 ''')
+            elif not field_selector or not field_selector.strip():
+                # Empty selector: get attribute from the collection element itself
+                js_code_parts.append(f'''
+                    result["{field_name}"] = element.getAttribute("{attr}") || "";
+                ''')
             else:
                 js_code_parts.append(f'''
                     const {field_name}_fieldElement = element.querySelector("{field_selector}");
@@ -1564,8 +1577,12 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                         {field_name}_fieldElement.getAttribute("{attr}") || "" : "";
                 ''')
         else:
-            # Extract text from child element
-            if field_selector == "th":
+            # Extract text from child element (never use empty selector in querySelector)
+            if not field_selector or not field_selector.strip():
+                js_code_parts.append(f'''
+                    result["{field_name}"] = (element.innerText || element.textContent || "").trim();
+                ''')
+            elif field_selector == "th":
                 # Special handling for th elements with rowspan
                 js_code_parts.append(f'''
                     const {field_name}_fieldElement = element.querySelector("{field_selector}");
@@ -1591,6 +1608,16 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 ''')
     
     js_code = '\n'.join(js_code_parts)
+    
+    # Build explicit push so we always push a plain object (avoids wrong serialization / string results)
+    field_names = list(field_configs.keys())
+    push_lines = ['const item = {};']
+    for fn in field_names:
+        push_lines.append(f'item["{fn}"] = result["{fn}"];')
+    if debug:
+        push_lines.append('item["_debug_html"] = result["_debug_html"];')
+    push_lines.append('results.push(item);')
+    push_code = '\n                '.join(push_lines)
     
     # Debug: Log the JavaScript code
     logger.info(f"🔍 JavaScript code for collection: {js_code}")
@@ -1619,7 +1646,7 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                 
                 {js_code}
                 console.log('Result for element', i, ':', result);
-                results.push(result);
+                {push_code}
             }}
             
             console.log('Final results:', results);
@@ -2534,7 +2561,9 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             for key, config in request.collect.items():
                 try:
                     selector = config["selector"]
-                    fields = config.get("fields", {})
+                    # Ensure fields is a dict so multi-field collect (e.g. key/value) uses extract_collection_with_fields
+                    raw_fields = config.get("fields")
+                    fields = raw_fields if isinstance(raw_fields, dict) else {}
                     items = await unified_parser(scraper, selector, operation_type="collection", fields=fields, debug=request.debug)
                     response_data["collect"][key] = items
                     logger.info(f"✅ Extracted '{key}': {len(items)} items")
