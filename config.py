@@ -45,5 +45,8 @@ class Config:
     STEALTH_MIN_DELAY = float(os.getenv('STEALTH_MIN_DELAY', '0.5'))
     STEALTH_MAX_DELAY = float(os.getenv('STEALTH_MAX_DELAY', '2.0'))
 
+    # Post-navigation sleep to allow JS to run (seconds). Reduce to speed up scraping.
+    NAVIGATE_POST_SLEEP_SEC = float(os.getenv('NAVIGATE_POST_SLEEP_SEC', '0.5'))
+
     # Proxy: time-based ban after failure (seconds); 0 = only count-based
     PROXY_BAN_TIME_SEC = int(os.getenv('PROXY_BAN_TIME_SEC', '300'))

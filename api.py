@@ -178,38 +178,41 @@ async def _test_proxy_connectivity(scraper: WebScraper) -> Dict[str, Any]:
 
 async def _wait_for_page_ready(scraper: WebScraper, label: str = "") -> None:
     """
-    Wait for page to be "fully" ready:
-    - domcontentloaded
-    - networkidle
+    Wait for page to be ready for scraping.
+    - domcontentloaded (required)
+    - networkidle (optional, disabled by default - many sites never reach it due to analytics/websockets)
     - document.readyState === 'complete'
-    Adds detailed logs so we can see what it is doing.
+    Use PAGE_READY_USE_NETWORKIDLE=true to enable networkidle (adds ~20s on dynamic sites).
     """
     if not scraper or not getattr(scraper, "page", None):
         return
 
     page = scraper.page
     ctx = f" ({label})" if label else ""
+    timeout_ms = int(os.getenv("PAGE_READY_TIMEOUT_MS", "8000"))
 
     # domcontentloaded
     try:
         logger.info(f"⏳ Page ready wait{ctx}: domcontentloaded")
-        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+        await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
     except Exception as e:
         msg = f"DOM content loaded wait failed{ctx}: {e}"
         logger.warning(f"⚠️ {msg}")
 
-    # networkidle
-    try:
-        logger.info(f"⏳ Page ready wait{ctx}: networkidle")
-        await page.wait_for_load_state("networkidle", timeout=20000)
-    except Exception as e:
-        msg = f"Network idle wait failed{ctx}: {e}"
-        logger.warning(f"⚠️ {msg}")
+    # networkidle - optional; many sites never reach it (analytics, websockets, ads)
+    use_networkidle = os.getenv("PAGE_READY_USE_NETWORKIDLE", "false").lower() == "true"
+    if use_networkidle:
+        try:
+            logger.info(f"⏳ Page ready wait{ctx}: networkidle")
+            await page.wait_for_load_state("networkidle", timeout=min(20000, timeout_ms * 2))
+        except Exception as e:
+            msg = f"Network idle wait failed{ctx}: {e}"
+            logger.warning(f"⚠️ {msg}")
 
     # readyState === 'complete'
     try:
         logger.info(f"⏳ Page ready wait{ctx}: document.readyState === 'complete'")
-        await page.wait_for_function("document.readyState === 'complete'", timeout=15000)
+        await page.wait_for_function("document.readyState === 'complete'", timeout=timeout_ms)
     except Exception as e:
         msg = f"ReadyState('complete') wait failed{ctx}: {e}"
         logger.warning(f"⚠️ {msg}")
@@ -364,53 +367,78 @@ async def _record_debug_frames(
 
 def _build_debug_video_from_frames(request_id: str, fps: int = 1) -> Optional[str]:
     """
-    Build a .webm debug video from recorded PNG frames using ffmpeg.
-    If ffmpeg is not available or fails, returns None.
+    Build a debug video from recorded PNG frames using ffmpeg.
+    Tries libvpx-vp9 (.webm) first, falls back to libx264 (.mp4) if unavailable.
     """
     try:
         _ensure_debug_dir()
-        pattern = os.path.join(DEBUG_DIR, f"{request_id}_frame_%04d.png")
-        output = os.path.join(DEBUG_DIR, f"{request_id}_video.webm")
+        def _frame_num(n: str) -> int:
+            try:
+                return int(n.replace(f"{request_id}_frame_", "").replace(".png", ""))
+            except ValueError:
+                return 0
 
-        # Check if there is at least one frame to avoid pointless ffmpeg call
-        has_frame = any(
-            name.startswith(f"{request_id}_frame_") and name.endswith(".png")
-            for name in os.listdir(DEBUG_DIR)
+        frame_files = sorted(
+            (f for f in os.listdir(DEBUG_DIR)
+             if f.startswith(f"{request_id}_frame_") and f.endswith(".png")),
+            key=_frame_num,
         )
-        if not has_frame:
+        if not frame_files:
             return None
 
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-framerate",
-            str(fps),
-            "-i",
-            pattern,
-            "-c:v",
-            "libvpx-vp9",
-            "-pix_fmt",
-            "yuv420p",
-            output,
-        ]
+        # Concat list for ffmpeg (works with any frame count, no sequence gap issues)
+        concat_path = os.path.join(DEBUG_DIR, f"{request_id}_concat.txt")
+        frame_duration = 1.0 / max(fps, 1)
+        def _escape_path(p: str) -> str:
+            return p.replace("\\", "/").replace("'", "'\\''")
 
-        logger.info(f"🎥 Building debug video via ffmpeg: {' '.join(cmd)}")
-        try:
-            subprocess.run(
+        with open(concat_path, "w") as f:
+            for name in frame_files:
+                abs_path = _escape_path(os.path.join(DEBUG_DIR, name))
+                f.write(f"file '{abs_path}'\n")
+                f.write(f"duration {frame_duration}\n")
+            f.write(f"file '{_escape_path(os.path.join(DEBUG_DIR, frame_files[-1]))}'\n")
+
+        def _run_ffmpeg(cmd: list, output_path: str) -> Tuple[bool, str]:
+            result = subprocess.run(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
                 check=False,
             )
-        except Exception as e:
-            logger.warning(f"⚠️ ffmpeg execution failed: {e}")
-            return None
+            err = (result.stderr or "").strip()
+            return os.path.isfile(output_path), err
+
+        # Try libvpx-vp9 (webm) first
+        output_webm = os.path.join(DEBUG_DIR, f"{request_id}_video.webm")
+        cmd_webm = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_path,
+            "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", output_webm,
+        ]
+        logger.info(f"🎥 Building debug video ({len(frame_files)} frames)...")
+        ok, err = _run_ffmpeg(cmd_webm, output_webm)
+        if ok:
+            output = output_webm
+        else:
+            # Fallback to libx264 (mp4) - more widely available
+            output_mp4 = os.path.join(DEBUG_DIR, f"{request_id}_video.mp4")
+            cmd_mp4 = [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_path,
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", output_mp4,
+            ]
+            ok, err2 = _run_ffmpeg(cmd_mp4, output_mp4)
+            if ok:
+                output = output_mp4
+            else:
+                logger.warning(f"⚠️ ffmpeg failed (webm): {err[:500] if err else 'no stderr'}")
+                logger.warning(f"⚠️ ffmpeg failed (mp4): {err2[:500] if err2 else 'no stderr'}")
+                return None
 
         if not os.path.isfile(output):
             logger.warning("⚠️ ffmpeg did not produce debug video file")
             return None
 
-        # Optionally clean up frame PNGs to keep debug dir small
+        # Clean up frame PNGs and concat list to keep debug dir small
         removed = 0
         for name in list(os.listdir(DEBUG_DIR)):
             if name.startswith(f"{request_id}_frame_") and name.endswith(".png"):
@@ -419,6 +447,11 @@ def _build_debug_video_from_frames(request_id: str, fps: int = 1) -> Optional[st
                     removed += 1
                 except Exception:
                     continue
+        try:
+            if os.path.isfile(concat_path):
+                os.remove(concat_path)
+        except Exception:
+            pass
         if removed:
             logger.info(f"🧹 Removed {removed} debug frame PNGs for request {request_id}")
 
@@ -1845,16 +1878,36 @@ _CHALLENGE_BODY_PATTERNS = (
     "enable javascript and cookies",
     "checking your browser before accessing",
     "please allow up to 5 seconds",
-    "cloudflare",
-    "ray id",
     "cf-browser-verification",
     "challenge-running",
     "jschl-answer",
 )
+# Broad patterns: may appear on normal pages using Cloudflare CDN - require iframe to confirm
+_CHALLENGE_BODY_PATTERNS_BROAD = ("cloudflare", "ray id")
+
+
+async def _has_challenge_iframe(scraper: WebScraper) -> bool:
+    """True if challenge/turnstile iframe is present (strong signal of actual challenge)."""
+    try:
+        if not scraper or not scraper.page or scraper.page.is_closed():
+            return False
+        for sel in ["iframe[src*='turnstile']", "iframe[src*='challenges']"]:
+            try:
+                if scraper.page.locator(sel).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
 
 
 async def _is_challenge_page(scraper: WebScraper) -> bool:
-    """True if the current page is a security verification / challenge page."""
+    """
+    True if the current page is a security verification / challenge page.
+    Avoids false positives: 'cloudflare' in body alone is not enough (many sites use CDN).
+    Requires challenge iframe for broad body patterns.
+    """
     try:
         if not scraper or not scraper.page or scraper.page.is_closed():
             return False
@@ -1863,8 +1916,12 @@ async def _is_challenge_page(scraper: WebScraper) -> bool:
             if p in title:
                 return True
         body = (await scraper.page.content()).lower()
+        has_iframe = await _has_challenge_iframe(scraper)
         for p in _CHALLENGE_BODY_PATTERNS:
             if p in body:
+                return True
+        for p in _CHALLENGE_BODY_PATTERNS_BROAD:
+            if p in body and has_iframe:
                 return True
         return False
     except Exception:
@@ -2377,14 +2434,21 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
                     )
                 except Exception as e:
                     logger.warning(f"⚠️ Could not restart mouse wander: {e}")
-                # Stop frame recorder on retry; do NOT restart - video shows first attempt only
+                # Stop old frame recorder, then restart with new scraper so video includes retry + clicks
                 if request.debug and frame_stop_event and frame_task:
                     try:
                         frame_stop_event.set()
                         await frame_task
-                        frame_task = None
                     except Exception:
                         pass
+                if request.debug:
+                    try:
+                        frame_stop_event = asyncio.Event()
+                        frame_task = asyncio.create_task(
+                            _record_debug_frames(scraper, request_id, frame_stop_event, fps=1)
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not restart debug frame recorder: {e}")
                 nav_delay = _stealth_nav_delay_sec()
                 if nav_delay > 0:
                     await asyncio.sleep(nav_delay)
@@ -2493,15 +2557,16 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix) and "_frame_" not in name
                 )
-                # Always include expected video URL even if ffmpeg is still running
-                video_name = f"{request_id}_video.webm"
-                video_url = (
-                    f"{base_url}/debug/{video_name}?api_key={api_key}"
-                    if base_url
-                    else f"/debug/{video_name}?api_key={api_key}"
-                )
-                if video_url not in debug_files:
-                    debug_files.append(video_url)
+                # Always include expected video URLs (webm or mp4) even if ffmpeg is still running
+                for ext in ("webm", "mp4"):
+                    video_name = f"{request_id}_video.{ext}"
+                    video_url = (
+                        f"{base_url}/debug/{video_name}?api_key={api_key}"
+                        if base_url
+                        else f"/debug/{video_name}?api_key={api_key}"
+                    )
+                    if video_url not in debug_files:
+                        debug_files.append(video_url)
             except Exception:
                 debug_files = debug_files or []
         
@@ -2740,14 +2805,21 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                     )
                 except Exception as e:
                     logger.warning(f"⚠️ Could not restart mouse wander: {e}")
-                # Stop frame recorder on retry; do NOT restart - video shows first attempt only
+                # Stop old frame recorder, then restart with new scraper so video includes retry + clicks
                 if request.debug and frame_stop_event and frame_task:
                     try:
                         frame_stop_event.set()
                         await frame_task
-                        frame_task = None
                     except Exception:
                         pass
+                if request.debug:
+                    try:
+                        frame_stop_event = asyncio.Event()
+                        frame_task = asyncio.create_task(
+                            _record_debug_frames(scraper, request_id, frame_stop_event, fps=1)
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not restart debug frame recorder: {e}")
                 nav_delay = _stealth_nav_delay_sec()
                 if nav_delay > 0:
                     await asyncio.sleep(nav_delay)
@@ -2883,6 +2955,14 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             if final_path:
                 debug_files.append(final_path)
 
+            # Stop frame recorder BEFORE video build so ffmpeg gets all frames
+            if frame_stop_event and frame_task:
+                try:
+                    frame_stop_event.set()
+                    await frame_task
+                except Exception:
+                    pass
+
             # Kick off debug video build in background (do not wait)
             try:
                 asyncio.create_task(_build_debug_video_from_frames_async(request_id, fps=1))
@@ -2903,28 +2983,29 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix) and "_frame_" not in name
                 )
-                # Always include expected video URL even if ffmpeg is still running
-                video_name = f"{request_id}_video.webm"
-                video_url = (
-                    f"{base_url}/debug/{video_name}?api_key={api_key}"
-                    if base_url
-                    else f"/debug/{video_name}?api_key={api_key}"
-                )
-                if video_url not in debug_files:
-                    debug_files.append(video_url)
+                # Always include expected video URLs (webm or mp4) even if ffmpeg is still running
+                for ext in ("webm", "mp4"):
+                    video_name = f"{request_id}_video.{ext}"
+                    video_url = (
+                        f"{base_url}/debug/{video_name}?api_key={api_key}"
+                        if base_url
+                        else f"/debug/{video_name}?api_key={api_key}"
+                    )
+                    if video_url not in debug_files:
+                        debug_files.append(video_url)
             except Exception:
                 debug_files = debug_files or []
         # Store domain session on successful page load
         await _store_domain_session(scraper, str(request.url))
 
-        # Stop mouse wander and debug frame recorder before cleanup
+        # Stop mouse wander and debug frame recorder before cleanup (frame recorder may already be stopped in debug block)
         if mouse_wander_stop_event and mouse_wander_task:
             try:
                 mouse_wander_stop_event.set()
                 await mouse_wander_task
             except Exception:
                 pass
-        if frame_stop_event and frame_task:
+        if frame_stop_event and frame_task and not frame_task.done():
             try:
                 frame_stop_event.set()
                 await frame_task

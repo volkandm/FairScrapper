@@ -331,8 +331,8 @@ class WebScraper:
                     # URL changed; continue with partially loaded/challenge page
                     logger.info(f"⚠️ Continuing despite navigation timeout; current URL: {current_url}")
 
-            # Wait a bit to allow JavaScript to run
-            await asyncio.sleep(2)
+            # Wait a bit to allow JavaScript to run (configurable via NAVIGATE_POST_SLEEP_SEC)
+            await asyncio.sleep(getattr(self.config, "NAVIGATE_POST_SLEEP_SEC", 0.5))
 
         except Exception as e:
             logger.error(f"Error navigating to {url}: {e}")

@@ -72,5 +72,13 @@ CHALLENGE_WAIT_MAX_SEC=10.0
 STEALTH_MIN_DELAY=0.5
 STEALTH_MAX_DELAY=2.0
 
+# Page ready wait: networkidle adds ~20s on many sites (analytics/websockets). Default: disabled.
+PAGE_READY_USE_NETWORKIDLE=false
+# Timeout for domcontentloaded and readyState complete (ms). Default 8000.
+PAGE_READY_TIMEOUT_MS=8000
+
+# Post-navigation sleep (seconds) to allow JS to run. Default 0.5. Was 2.0 before.
+NAVIGATE_POST_SLEEP_SEC=0.5
+
 # Proxy: time-based ban in seconds after a failure (0 = only use PROXY_MAX_FAILURES count)
 PROXY_BAN_TIME_SEC=300
