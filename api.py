@@ -1096,7 +1096,9 @@ async def unified_parser(scraper: WebScraper, selector: str, operation_type: str
         parsed_selector = selector
     
     # Handle query builder syntax (<, >, + operators)
-    if any(op in parsed_selector for op in ['<', '>', '+']):
+    # Skip when doing multi-field collection - selector like ".params > div" is valid CSS
+    # and must go to extract_collection_with_fields, not query builder
+    if not (operation_type == "collection" and fields) and any(op in parsed_selector for op in ['<', '>', '+']):
         logger.info("🔧 Query builder syntax detected")
         selections, operators = parse_query_builder_selector(parsed_selector)
         return await execute_query_builder(scraper, selections, operators, operation_type, attr)
@@ -2375,20 +2377,14 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
                     )
                 except Exception as e:
                     logger.warning(f"⚠️ Could not restart mouse wander: {e}")
+                # Stop frame recorder on retry; do NOT restart - video shows first attempt only
                 if request.debug and frame_stop_event and frame_task:
                     try:
                         frame_stop_event.set()
                         await frame_task
+                        frame_task = None
                     except Exception:
                         pass
-                if request.debug:
-                    try:
-                        frame_stop_event = asyncio.Event()
-                        frame_task = asyncio.create_task(
-                            _record_debug_frames(scraper, request_id, frame_stop_event, fps=1)
-                        )
-                    except Exception as e:
-                        logger.warning(f"⚠️ Could not restart debug frame recorder: {e}")
                 nav_delay = _stealth_nav_delay_sec()
                 if nav_delay > 0:
                     await asyncio.sleep(nav_delay)
@@ -2744,20 +2740,14 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                     )
                 except Exception as e:
                     logger.warning(f"⚠️ Could not restart mouse wander: {e}")
+                # Stop frame recorder on retry; do NOT restart - video shows first attempt only
                 if request.debug and frame_stop_event and frame_task:
                     try:
                         frame_stop_event.set()
                         await frame_task
+                        frame_task = None
                     except Exception:
                         pass
-                if request.debug:
-                    try:
-                        frame_stop_event = asyncio.Event()
-                        frame_task = asyncio.create_task(
-                            _record_debug_frames(scraper, request_id, frame_stop_event, fps=1)
-                        )
-                    except Exception as e:
-                        logger.warning(f"⚠️ Could not restart debug frame recorder: {e}")
                 nav_delay = _stealth_nav_delay_sec()
                 if nav_delay > 0:
                     await asyncio.sleep(nav_delay)
@@ -3134,21 +3124,10 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
         
         # Get proxy info
         proxy_used = scraper.get_next_proxy() if hasattr(scraper, 'get_next_proxy') else None
-        
-        # Get IP address
+
+        # IP address: avoid extra navigations (httpbin + return) - scraper is closed right after
         ip_address = None
-        try:
-            await scraper.navigate_to_url("https://httpbin.org/ip")
-            ip_response = await scraper.page.evaluate("() => document.body.innerText")
-            ip_data = json.loads(ip_response)
-            ip_address = ip_data.get("origin", "unknown")
-            logger.info(f"🌐 IP Address: {ip_address}")
-        except Exception as e:
-            logger.error(f"❌ IP detection failed: {str(e)}")
-        
-        # Return to original URL
-        await scraper.navigate_to_url(str(request.url))
-        
+
         # Store domain session on successful page load
         await _store_domain_session(scraper, str(request.url))
 
