@@ -367,78 +367,36 @@ async def _record_debug_frames(
 
 def _build_debug_video_from_frames(request_id: str, fps: int = 1) -> Optional[str]:
     """
-    Build a debug video from recorded PNG frames using ffmpeg.
-    Tries libvpx-vp9 (.webm) first, falls back to libx264 (.mp4) if unavailable.
+    Build a .webm debug video from recorded PNG frames using ffmpeg (image2 + %04d pattern).
     """
     try:
         _ensure_debug_dir()
-        def _frame_num(n: str) -> int:
-            try:
-                return int(n.replace(f"{request_id}_frame_", "").replace(".png", ""))
-            except ValueError:
-                return 0
+        pattern = os.path.join(DEBUG_DIR, f"{request_id}_frame_%04d.png")
+        output = os.path.join(DEBUG_DIR, f"{request_id}_video.webm")
 
-        frame_files = sorted(
-            (f for f in os.listdir(DEBUG_DIR)
-             if f.startswith(f"{request_id}_frame_") and f.endswith(".png")),
-            key=_frame_num,
+        has_frame = any(
+            name.startswith(f"{request_id}_frame_") and name.endswith(".png")
+            for name in os.listdir(DEBUG_DIR)
         )
-        if not frame_files:
+        if not has_frame:
             return None
 
-        # Concat list for ffmpeg (works with any frame count, no sequence gap issues)
-        concat_path = os.path.join(DEBUG_DIR, f"{request_id}_concat.txt")
-        frame_duration = 1.0 / max(fps, 1)
-        def _escape_path(p: str) -> str:
-            return p.replace("\\", "/").replace("'", "'\\''")
-
-        with open(concat_path, "w") as f:
-            for name in frame_files:
-                abs_path = _escape_path(os.path.join(DEBUG_DIR, name))
-                f.write(f"file '{abs_path}'\n")
-                f.write(f"duration {frame_duration}\n")
-            f.write(f"file '{_escape_path(os.path.join(DEBUG_DIR, frame_files[-1]))}'\n")
-
-        def _run_ffmpeg(cmd: list, output_path: str) -> Tuple[bool, str]:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            err = (result.stderr or "").strip()
-            return os.path.isfile(output_path), err
-
-        # Try libvpx-vp9 (webm) first
-        output_webm = os.path.join(DEBUG_DIR, f"{request_id}_video.webm")
-        cmd_webm = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_path,
-            "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", output_webm,
+        cmd = [
+            "ffmpeg", "-y", "-framerate", str(fps), "-i", pattern,
+            "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", output,
         ]
-        logger.info(f"🎥 Building debug video ({len(frame_files)} frames)...")
-        ok, err = _run_ffmpeg(cmd_webm, output_webm)
-        if ok:
-            output = output_webm
-        else:
-            # Fallback to libx264 (mp4) - more widely available
-            output_mp4 = os.path.join(DEBUG_DIR, f"{request_id}_video.mp4")
-            cmd_mp4 = [
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_path,
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", output_mp4,
-            ]
-            ok, err2 = _run_ffmpeg(cmd_mp4, output_mp4)
-            if ok:
-                output = output_mp4
-            else:
-                logger.warning(f"⚠️ ffmpeg failed (webm): {err[:500] if err else 'no stderr'}")
-                logger.warning(f"⚠️ ffmpeg failed (mp4): {err2[:500] if err2 else 'no stderr'}")
-                return None
+        logger.info(f"🎥 Building debug video via ffmpeg: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except Exception as e:
+            logger.warning(f"⚠️ ffmpeg execution failed: {e}")
+            return None
 
         if not os.path.isfile(output):
             logger.warning("⚠️ ffmpeg did not produce debug video file")
             return None
 
-        # Clean up frame PNGs and concat list to keep debug dir small
+        # Clean up frame PNGs
         removed = 0
         for name in list(os.listdir(DEBUG_DIR)):
             if name.startswith(f"{request_id}_frame_") and name.endswith(".png"):
@@ -447,11 +405,6 @@ def _build_debug_video_from_frames(request_id: str, fps: int = 1) -> Optional[st
                     removed += 1
                 except Exception:
                     continue
-        try:
-            if os.path.isfile(concat_path):
-                os.remove(concat_path)
-        except Exception:
-            pass
         if removed:
             logger.info(f"🧹 Removed {removed} debug frame PNGs for request {request_id}")
 
@@ -2557,16 +2510,15 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix) and "_frame_" not in name
                 )
-                # Always include expected video URLs (webm or mp4) even if ffmpeg is still running
-                for ext in ("webm", "mp4"):
-                    video_name = f"{request_id}_video.{ext}"
-                    video_url = (
-                        f"{base_url}/debug/{video_name}?api_key={api_key}"
-                        if base_url
-                        else f"/debug/{video_name}?api_key={api_key}"
-                    )
-                    if video_url not in debug_files:
-                        debug_files.append(video_url)
+                # Always include expected video URL even if ffmpeg is still running
+                video_name = f"{request_id}_video.webm"
+                video_url = (
+                    f"{base_url}/debug/{video_name}?api_key={api_key}"
+                    if base_url
+                    else f"/debug/{video_name}?api_key={api_key}"
+                )
+                if video_url not in debug_files:
+                    debug_files.append(video_url)
             except Exception:
                 debug_files = debug_files or []
         
@@ -2983,16 +2935,15 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                     for name in os.listdir(DEBUG_DIR)
                     if name.startswith(prefix) and "_frame_" not in name
                 )
-                # Always include expected video URLs (webm or mp4) even if ffmpeg is still running
-                for ext in ("webm", "mp4"):
-                    video_name = f"{request_id}_video.{ext}"
-                    video_url = (
-                        f"{base_url}/debug/{video_name}?api_key={api_key}"
-                        if base_url
-                        else f"/debug/{video_name}?api_key={api_key}"
-                    )
-                    if video_url not in debug_files:
-                        debug_files.append(video_url)
+                # Always include expected video URL even if ffmpeg is still running
+                video_name = f"{request_id}_video.webm"
+                video_url = (
+                    f"{base_url}/debug/{video_name}?api_key={api_key}"
+                    if base_url
+                    else f"/debug/{video_name}?api_key={api_key}"
+                )
+                if video_url not in debug_files:
+                    debug_files.append(video_url)
             except Exception:
                 debug_files = debug_files or []
         # Store domain session on successful page load
