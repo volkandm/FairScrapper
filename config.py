@@ -33,3 +33,17 @@ class Config:
     # Default scraping settings
     DEFAULT_WAIT_TIME = int(os.getenv('DEFAULT_WAIT_TIME', '5000'))  # milliseconds
     MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
+
+    # Session / challenge handling (inspired by cloudscraper)
+    SESSION_REFRESH_INTERVAL_SEC = int(os.getenv('SESSION_REFRESH_INTERVAL_SEC', '3600'))
+    AUTO_REFRESH_ON_CHALLENGE = os.getenv('AUTO_REFRESH_ON_CHALLENGE', 'true').lower() == 'true'
+    MAX_CHALLENGE_RETRIES = int(os.getenv('MAX_CHALLENGE_RETRIES', '2'))
+    CHALLENGE_WAIT_MIN_SEC = float(os.getenv('CHALLENGE_WAIT_MIN_SEC', '5.0'))
+    CHALLENGE_WAIT_MAX_SEC = float(os.getenv('CHALLENGE_WAIT_MAX_SEC', '10.0'))
+
+    # Stealth: human-like delay before first navigation (seconds)
+    STEALTH_MIN_DELAY = float(os.getenv('STEALTH_MIN_DELAY', '0.5'))
+    STEALTH_MAX_DELAY = float(os.getenv('STEALTH_MAX_DELAY', '2.0'))
+
+    # Proxy: time-based ban after failure (seconds); 0 = only count-based
+    PROXY_BAN_TIME_SEC = int(os.getenv('PROXY_BAN_TIME_SEC', '300'))

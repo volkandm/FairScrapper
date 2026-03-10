@@ -98,8 +98,26 @@ class WebScraper:
             logger.error(f"Error loading proxy list: {e}")
             self.proxy_list = []
     
+    def _is_proxy_available(self, proxy_url):
+        """Check if proxy is available (under failure count and not in time-based ban)."""
+        ban_time_sec = getattr(self.config, "PROXY_BAN_TIME_SEC", 0) or 0
+        now = time.time()
+        entry = self.proxy_failures.get(proxy_url)
+        if entry is None:
+            return True
+        if isinstance(entry, dict):
+            count = entry.get("count", 0)
+            last_fail = entry.get("last_fail", 0)
+            if count >= self.config.PROXY_MAX_FAILURES:
+                return False
+            if ban_time_sec > 0 and (now - last_fail) < ban_time_sec:
+                return False
+            return True
+        # Legacy: int count only
+        return int(entry) < self.config.PROXY_MAX_FAILURES
+
     def get_next_proxy(self):
-        """Get next working proxy from the list"""
+        """Get next working proxy from the list (respects failure count and optional time-based ban)."""
         if not self.config.PROXY_ENABLED:
             return None  # Proxy is disabled
         
@@ -110,22 +128,17 @@ class WebScraper:
         if self.current_proxy_index < len(self.proxy_list):
             proxy = self.proxy_list[self.current_proxy_index]
             proxy_url = proxy.get('url', '')
-            
-            # Check if proxy has too many failures
-            if self.proxy_failures.get(proxy_url, 0) < self.config.PROXY_MAX_FAILURES:
+            if self._is_proxy_available(proxy_url):
                 logger.info(f"🔄 Using proxy {self.current_proxy_index + 1}/{len(self.proxy_list)}: {proxy_url}")
-                return proxy  # Return full proxy info dict
-            else:
-                logger.warning(f"⚠️ Proxy {proxy_url} has too many failures, skipping")
+                return proxy
+            logger.warning(f"⚠️ Proxy {proxy_url} unavailable (failures or ban), skipping")
         
-        # If current proxy failed, try to find any working proxy
         for i, proxy in enumerate(self.proxy_list):
             proxy_url = proxy.get('url', '')
-            if self.proxy_failures.get(proxy_url, 0) < self.config.PROXY_MAX_FAILURES:
+            if self._is_proxy_available(proxy_url):
                 logger.info(f"🔄 Fallback to proxy {i + 1}/{len(self.proxy_list)}: {proxy_url}")
                 return proxy
         
-        # If no working proxy found, return None
         logger.error("❌ No working proxies available")
         return None
     
@@ -145,12 +158,15 @@ class WebScraper:
         return None
     
     def mark_proxy_failed(self, proxy_url):
-        """Mark a proxy as failed"""
-        if proxy_url in self.proxy_failures:
-            self.proxy_failures[proxy_url] += 1
+        """Mark a proxy as failed (count + optional time-based ban)."""
+        now = time.time()
+        entry = self.proxy_failures.get(proxy_url)
+        if isinstance(entry, dict):
+            self.proxy_failures[proxy_url] = {"count": entry.get("count", 0) + 1, "last_fail": now}
         else:
-            self.proxy_failures[proxy_url] = 1
-        logger.warning(f"Proxy {proxy_url} marked as failed (failures: {self.proxy_failures[proxy_url]})")
+            count = (entry or 0) + 1
+            self.proxy_failures[proxy_url] = {"count": count, "last_fail": now}
+        logger.warning(f"Proxy {proxy_url} marked as failed (failures: {self.proxy_failures[proxy_url]['count']})")
     
     async def setup_browser(self, storage_state: Optional[Dict[str, Any]] = None):
         """Setup browser with proxy configuration and optional storage state"""
@@ -233,6 +249,30 @@ class WebScraper:
             }
             if storage_state:
                 context_kwargs["storage_state"] = storage_state
+
+            # Stealth: browser-like headers (inspired by cloudscraper stealth)
+            if os.getenv("USE_STEALTH", "").lower() in ("1", "true", "yes"):
+                accept_options = [
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                ]
+                accept_lang_options = [
+                    "en-US,en;q=0.9",
+                    "en-GB,en;q=0.9,en-US;q=0.8",
+                    "en-US,en;q=0.8",
+                ]
+                context_kwargs["extra_http_headers"] = {
+                    "Accept": random.choice(accept_options),
+                    "Accept-Language": random.choice(accept_lang_options),
+                    "sec-ch-ua": '"Chromium";v="120", "Google Chrome";v="120", "Not?A_Brand";v="99"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-User": "?1",
+                    "Sec-Fetch-Dest": "document",
+                }
 
             self.context = await self.browser.new_context(**context_kwargs)
 

@@ -89,6 +89,11 @@ def _get_domain_from_url(url: str) -> Optional[str]:
         return None
 
 
+def _get_session_refresh_interval_sec() -> int:
+    """Session refresh interval (force new session after this age). Inspired by cloudscraper."""
+    return int(os.getenv("SESSION_REFRESH_INTERVAL_SEC", "3600"))
+
+
 def _get_valid_domain_session(domain: Optional[str]) -> Optional[Dict[str, Any]]:
     """Return cached session for domain if it exists and is not expired."""
     if not domain:
@@ -103,9 +108,15 @@ def _get_valid_domain_session(domain: Optional[str]) -> Optional[Dict[str, Any]]
         return None
 
     if time.time() - created_at > SESSION_TTL_SECONDS:
-        # Session expired, remove it
         domain_sessions.pop(domain, None)
         logger.info(f"🗑️ Domain session expired for {domain}")
+        return None
+
+    # Optional: force refresh after shorter interval (session health, like cloudscraper)
+    refresh_interval = _get_session_refresh_interval_sec()
+    if refresh_interval > 0 and (time.time() - created_at) > refresh_interval:
+        domain_sessions.pop(domain, None)
+        logger.info(f"🔄 Domain session refreshed for {domain} (age > {refresh_interval}s)")
         return None
 
     return session
@@ -276,6 +287,45 @@ async def _random_mouse_drift(scraper: WebScraper, label: str = "") -> None:
     except Exception:
         # Mouse drift is best-effort; never fail the main flow
         pass
+
+
+async def _random_mouse_wander(
+    scraper: WebScraper,
+    stop_event: asyncio.Event,
+    min_interval_sec: float = 2.0,
+    max_interval_sec: float = 5.0,
+) -> None:
+    """
+    Background task: periodically move mouse to random positions during the request.
+    Reduces bot detection by simulating human-like cursor movement.
+    """
+    try:
+        if not scraper or not getattr(scraper, "page", None):
+            return
+        logger.info("🖱️ Starting random mouse wander (anti-detection)")
+        while not stop_event.is_set():
+            try:
+                interval = random.uniform(min_interval_sec, max_interval_sec)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    pass  # Timeout expected; proceed to move
+                if stop_event.is_set():
+                    break
+                if not scraper or not getattr(scraper, "page", None):
+                    break
+                try:
+                    if scraper.page.is_closed():
+                        break
+                except Exception:
+                    break
+                await _random_mouse_drift(scraper, label="wander")
+            except Exception as e:
+                logger.debug(f"Mouse wander step: {e}")
+                # Continue loop unless stop_event is set
+        logger.info("🖱️ Mouse wander stopped")
+    except Exception as e:
+        logger.debug(f"Mouse wander task ended: {e}")
 
 
 async def _record_debug_frames(
@@ -1778,18 +1828,89 @@ async def scrape_website(
 VERIFY_HUMAN_SELECTOR = "__verify_human__"
 
 
+# Challenge page patterns (inspired by cloudscraper: IUAM, v2, v3, Turnstile)
+_CHALLENGE_TITLE_PATTERNS = (
+    "just a moment",
+    "checking your browser",
+    "please wait",
+    "ddos protection",
+    "attention required",
+    "one more step",
+)
+_CHALLENGE_BODY_PATTERNS = (
+    "performing security verification",
+    "cf-turnstile",
+    "enable javascript and cookies",
+    "checking your browser before accessing",
+    "please allow up to 5 seconds",
+    "cloudflare",
+    "ray id",
+    "cf-browser-verification",
+    "challenge-running",
+    "jschl-answer",
+)
+
+
 async def _is_challenge_page(scraper: WebScraper) -> bool:
     """True if the current page is a security verification / challenge page."""
     try:
         if not scraper or not scraper.page or scraper.page.is_closed():
             return False
         title = (await scraper.page.title()).lower()
-        if "just a moment" in title:
-            return True
-        body = await scraper.page.content()
-        return "Performing security verification" in body or "cf-turnstile" in body
+        for p in _CHALLENGE_TITLE_PATTERNS:
+            if p in title:
+                return True
+        body = (await scraper.page.content()).lower()
+        for p in _CHALLENGE_BODY_PATTERNS:
+            if p in body:
+                return True
+        return False
     except Exception:
         return False
+
+
+def _challenge_wait_sec() -> float:
+    """Random wait for challenge page (human-like)."""
+    try:
+        mn = float(os.getenv("CHALLENGE_WAIT_MIN_SEC", "5.0"))
+        mx = float(os.getenv("CHALLENGE_WAIT_MAX_SEC", "10.0"))
+        return random.uniform(mn, mx)
+    except Exception:
+        return 6.0
+
+
+def _stealth_nav_delay_sec() -> float:
+    """Optional delay before first navigation (stealth)."""
+    try:
+        mn = float(os.getenv("STEALTH_MIN_DELAY", "0.5"))
+        mx = float(os.getenv("STEALTH_MAX_DELAY", "2.0"))
+        return random.uniform(mn, mx)
+    except Exception:
+        return 0.0
+
+
+async def _handle_challenge_after_navigate(scraper: WebScraper) -> bool:
+    """
+    If current page is a challenge page: wait, click verify, wait again.
+    Returns True if page is still a challenge page after handling (caller may retry with fresh session).
+    """
+    if not await _is_challenge_page(scraper):
+        return False
+    wait_s = _challenge_wait_sec()
+    logger.info(f"🛡️ Challenge page detected; waiting {wait_s:.1f}s then attempting verify")
+    await asyncio.sleep(wait_s)
+    clicked = await _click_verify_human(scraper)
+    if clicked:
+        await asyncio.sleep(2.0)
+    await asyncio.sleep(1.0)
+    try:
+        await _wait_for_page_ready(scraper, label="after challenge")
+    except Exception as e:
+        logger.warning(f"⚠️ Page ready wait after challenge: {e}")
+    still = await _is_challenge_page(scraper)
+    if still:
+        logger.warning("🛡️ Still on challenge page after wait and verify attempt")
+    return still
 
 
 async def _click_verify_human(scraper: WebScraper) -> bool:
@@ -2117,6 +2238,8 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
     debug_files: List[str] = []
     frame_stop_event: Optional[asyncio.Event] = None
     frame_task: Optional[asyncio.Task] = None
+    mouse_wander_stop_event: Optional[asyncio.Event] = None
+    mouse_wander_task: Optional[asyncio.Task] = None
 
     try:
         logger.info(f"📄 HTML source request {request_id}: {request.url}")
@@ -2125,12 +2248,21 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
         domain = _get_domain_from_url(str(request.url))
         scraper = await get_scraper(domain=domain)
 
-        # Start debug frame recorder (10 fps) if debug=true
+        # Start random mouse wander (anti-detection)
+        try:
+            mouse_wander_stop_event = asyncio.Event()
+            mouse_wander_task = asyncio.create_task(
+                _random_mouse_wander(scraper, mouse_wander_stop_event)
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Could not start mouse wander: {e}")
+
+        # Start debug frame recorder (1 fps) if debug=true
         if request.debug:
             try:
                 frame_stop_event = asyncio.Event()
                 frame_task = asyncio.create_task(
-                    _record_debug_frames(scraper, request_id, frame_stop_event, fps=10)
+                    _record_debug_frames(scraper, request_id, frame_stop_event, fps=1)
                 )
             except Exception as e:
                 logger.warning(f"⚠️ Could not start debug frame recorder: {e}")
@@ -2142,6 +2274,12 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
             else:
                 logger.info("🔒 Using proxy from configuration")
         
+        # Optional stealth delay before first navigation (inspired by cloudscraper)
+        nav_delay = _stealth_nav_delay_sec()
+        if nav_delay > 0:
+            logger.info(f"⏳ Stealth delay before navigate: {nav_delay:.1f}s")
+            await asyncio.sleep(nav_delay)
+
         # Navigate to URL
         logger.info(f"Navigating to: {request.url}")
         try:
@@ -2204,6 +2342,65 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
         if request.wait_time:
             logger.info(f"⏳ Additional explicit wait_time: {request.wait_time} seconds")
             await asyncio.sleep(request.wait_time)
+
+        # Challenge page handling with optional session refresh retry (inspired by cloudscraper)
+        auto_refresh_challenge = os.getenv("AUTO_REFRESH_ON_CHALLENGE", "true").lower() == "true"
+        max_challenge_retries = int(os.getenv("MAX_CHALLENGE_RETRIES", "2"))
+        challenge_retries = 0
+        url_str = str(request.url)
+        while challenge_retries <= max_challenge_retries:
+            if await _is_challenge_page(scraper):
+                if not auto_refresh_challenge or challenge_retries >= max_challenge_retries:
+                    logger.warning("🛡️ Challenge page detected; continuing (no retry or max retries reached)")
+                    break
+                still_challenge = await _handle_challenge_after_navigate(scraper)
+                if not still_challenge:
+                    break
+                logger.info(f"🛡️ Challenge retry {challenge_retries + 1}/{max_challenge_retries}: dropping session, new context")
+                if domain and domain in domain_sessions:
+                    domain_sessions.pop(domain, None)
+                await cleanup_scraper(scraper)
+                challenge_retries += 1
+                scraper = await get_scraper(domain=domain)
+                if mouse_wander_stop_event and mouse_wander_task:
+                    try:
+                        mouse_wander_stop_event.set()
+                        await mouse_wander_task
+                    except Exception:
+                        pass
+                try:
+                    mouse_wander_stop_event = asyncio.Event()
+                    mouse_wander_task = asyncio.create_task(
+                        _random_mouse_wander(scraper, mouse_wander_stop_event)
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not restart mouse wander: {e}")
+                if request.debug and frame_stop_event and frame_task:
+                    try:
+                        frame_stop_event.set()
+                        await frame_task
+                    except Exception:
+                        pass
+                if request.debug:
+                    try:
+                        frame_stop_event = asyncio.Event()
+                        frame_task = asyncio.create_task(
+                            _record_debug_frames(scraper, request_id, frame_stop_event, fps=1)
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not restart debug frame recorder: {e}")
+                nav_delay = _stealth_nav_delay_sec()
+                if nav_delay > 0:
+                    await asyncio.sleep(nav_delay)
+                await scraper.navigate_to_url(url_str)
+                try:
+                    await _wait_for_page_ready(scraper, label="retry")
+                except Exception as e:
+                    logger.warning(f"⚠️ Page ready wait (retry): {e}")
+                if request.wait_time:
+                    await asyncio.sleep(request.wait_time)
+            else:
+                break
 
         # Check if page is accessible (not about:blank)
         try:
@@ -2315,7 +2512,13 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
         # Store domain session on successful page load
         await _store_domain_session(scraper, str(request.url))
 
-        # Stop debug frame recorder before cleanup
+        # Stop mouse wander and debug frame recorder before cleanup
+        if mouse_wander_stop_event and mouse_wander_task:
+            try:
+                mouse_wander_stop_event.set()
+                await mouse_wander_task
+            except Exception:
+                pass
         if frame_stop_event and frame_task:
             try:
                 frame_stop_event.set()
@@ -2352,7 +2555,13 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
         error_msg = f"HTML source extraction failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         
-        # Stop debug frame recorder on error
+        # Stop mouse wander and debug frame recorder on error
+        if mouse_wander_stop_event and mouse_wander_task:
+            try:
+                mouse_wander_stop_event.set()
+                await mouse_wander_task
+            except Exception:
+                pass
         if frame_stop_event and frame_task:
             try:
                 frame_stop_event.set()
@@ -2396,6 +2605,8 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
     debug_files: List[str] = []
     frame_stop_event: Optional[asyncio.Event] = None
     frame_task: Optional[asyncio.Task] = None
+    mouse_wander_stop_event: Optional[asyncio.Event] = None
+    mouse_wander_task: Optional[asyncio.Task] = None
 
     try:
         logger.info(f"🎯 Unified scraping request {request_id}: {request.url}")
@@ -2404,12 +2615,21 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
         domain = _get_domain_from_url(str(request.url))
         scraper = await get_scraper(domain=domain)
 
-        # Start debug frame recorder (10 fps) if debug=true
+        # Start random mouse wander (anti-detection)
+        try:
+            mouse_wander_stop_event = asyncio.Event()
+            mouse_wander_task = asyncio.create_task(
+                _random_mouse_wander(scraper, mouse_wander_stop_event)
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Could not start mouse wander: {e}")
+
+        # Start debug frame recorder (1 fps) if debug=true
         if request.debug:
             try:
                 frame_stop_event = asyncio.Event()
                 frame_task = asyncio.create_task(
-                    _record_debug_frames(scraper, request_id, frame_stop_event, fps=10)
+                    _record_debug_frames(scraper, request_id, frame_stop_event, fps=1)
                 )
             except Exception as e:
                 logger.warning(f"⚠️ Could not start debug frame recorder: {e}")
@@ -2423,6 +2643,12 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             else:
                 logger.info("🔒 Using proxy from configuration")
         
+        # Optional stealth delay before first navigation (inspired by cloudscraper)
+        nav_delay = _stealth_nav_delay_sec()
+        if nav_delay > 0:
+            logger.info(f"⏳ Stealth delay before navigate: {nav_delay:.1f}s")
+            await asyncio.sleep(nav_delay)
+
         # Navigate to URL
         logger.info(f"Navigating to: {request.url}")
         try:
@@ -2485,6 +2711,65 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
         if request.wait_time:
             logger.info(f"⏳ Additional explicit wait_time: {request.wait_time} seconds")
             await asyncio.sleep(request.wait_time)
+
+        # Challenge page handling with optional session refresh retry (inspired by cloudscraper)
+        auto_refresh_challenge = os.getenv("AUTO_REFRESH_ON_CHALLENGE", "true").lower() == "true"
+        max_challenge_retries = int(os.getenv("MAX_CHALLENGE_RETRIES", "2"))
+        challenge_retries = 0
+        url_str = str(request.url)
+        while challenge_retries <= max_challenge_retries:
+            if await _is_challenge_page(scraper):
+                if not auto_refresh_challenge or challenge_retries >= max_challenge_retries:
+                    logger.warning("🛡️ Challenge page detected; continuing (no retry or max retries reached)")
+                    break
+                still_challenge = await _handle_challenge_after_navigate(scraper)
+                if not still_challenge:
+                    break
+                logger.info(f"🛡️ Challenge retry {challenge_retries + 1}/{max_challenge_retries}: dropping session, new context")
+                if domain and domain in domain_sessions:
+                    domain_sessions.pop(domain, None)
+                await cleanup_scraper(scraper)
+                challenge_retries += 1
+                scraper = await get_scraper(domain=domain)
+                if mouse_wander_stop_event and mouse_wander_task:
+                    try:
+                        mouse_wander_stop_event.set()
+                        await mouse_wander_task
+                    except Exception:
+                        pass
+                try:
+                    mouse_wander_stop_event = asyncio.Event()
+                    mouse_wander_task = asyncio.create_task(
+                        _random_mouse_wander(scraper, mouse_wander_stop_event)
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not restart mouse wander: {e}")
+                if request.debug and frame_stop_event and frame_task:
+                    try:
+                        frame_stop_event.set()
+                        await frame_task
+                    except Exception:
+                        pass
+                if request.debug:
+                    try:
+                        frame_stop_event = asyncio.Event()
+                        frame_task = asyncio.create_task(
+                            _record_debug_frames(scraper, request_id, frame_stop_event, fps=1)
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not restart debug frame recorder: {e}")
+                nav_delay = _stealth_nav_delay_sec()
+                if nav_delay > 0:
+                    await asyncio.sleep(nav_delay)
+                await scraper.navigate_to_url(url_str)
+                try:
+                    await _wait_for_page_ready(scraper, label="retry")
+                except Exception as e:
+                    logger.warning(f"⚠️ Page ready wait (retry): {e}")
+                if request.wait_time:
+                    await asyncio.sleep(request.wait_time)
+            else:
+                break
 
         # Check if page is accessible (not about:blank)
         try:
@@ -2642,7 +2927,13 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
         # Store domain session on successful page load
         await _store_domain_session(scraper, str(request.url))
 
-        # Stop debug frame recorder before cleanup
+        # Stop mouse wander and debug frame recorder before cleanup
+        if mouse_wander_stop_event and mouse_wander_task:
+            try:
+                mouse_wander_stop_event.set()
+                await mouse_wander_task
+            except Exception:
+                pass
         if frame_stop_event and frame_task:
             try:
                 frame_stop_event.set()
@@ -2678,7 +2969,13 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
         logger.error(f"❌ {error_msg}")
 
         try:
-            # Stop debug frame recorder on error
+            # Stop mouse wander and debug frame recorder on error
+            if mouse_wander_stop_event and mouse_wander_task:
+                try:
+                    mouse_wander_stop_event.set()
+                    await mouse_wander_task
+                except Exception:
+                    pass
             if frame_stop_event and frame_task:
                 try:
                     frame_stop_event.set()
@@ -2728,6 +3025,12 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
             else:
                 logger.info("🔒 Using proxy from configuration")
         
+        # Optional stealth delay before first navigation (inspired by cloudscraper)
+        nav_delay = _stealth_nav_delay_sec()
+        if nav_delay > 0:
+            logger.info(f"⏳ Stealth delay before navigate: {nav_delay:.1f}s")
+            await asyncio.sleep(nav_delay)
+
         # Navigate to URL
         logger.info(f"Navigating to: {request.url}")
         try:

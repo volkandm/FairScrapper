@@ -232,6 +232,8 @@ USE_STEALTH=false
 ```
 Set `USE_STEALTH=true` when scraping sites that show “Verify you are human” or similar challenges; then restart the API (`./restart.sh`).
 
+**Challenge & session (optional):** When a challenge page is detected, the scraper can wait, click verify, and retry with a fresh session. Env: `SESSION_REFRESH_INTERVAL_SEC`, `AUTO_REFRESH_ON_CHALLENGE`, `MAX_CHALLENGE_RETRIES`, `CHALLENGE_WAIT_MIN_SEC` / `CHALLENGE_WAIT_MAX_SEC`, `STEALTH_MIN_DELAY` / `STEALTH_MAX_DELAY`, `PROXY_BAN_TIME_SEC`. See `env_example.txt`.
+
 ### Proxy Setup
 
 #### Method 1: Environment Variables (Recommended)

@@ -1014,6 +1014,8 @@ Files older than 5 days are deleted automatically.
 
 Set **`USE_STEALTH=true`** in `.env` to enable playwright-stealth and reduce bot detection on challenge pages. Restart the API after changing (e.g. `./restart.sh`). Requires `playwright-stealth` (in `requirements.txt`).
 
+**Challenge & session (optional):** `SESSION_REFRESH_INTERVAL_SEC`, `AUTO_REFRESH_ON_CHALLENGE`, `MAX_CHALLENGE_RETRIES`, `CHALLENGE_WAIT_MIN_SEC` / `CHALLENGE_WAIT_MAX_SEC`, `STEALTH_MIN_DELAY` / `STEALTH_MAX_DELAY`, `PROXY_BAN_TIME_SEC`. See `env_example.txt`.
+
 ### Supported Proxy Types
 
 - **HTTP**: `http://proxy.com:8080`

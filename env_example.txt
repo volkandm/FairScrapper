@@ -56,3 +56,21 @@ MAX_RETRIES=3
 # Stealth mode (optional): reduce bot detection on challenge pages
 # Set to true to enable playwright-stealth for browser contexts
 USE_STEALTH=false
+
+# Session / challenge handling (inspired by cloudscraper)
+# Force new session after this many seconds (0 = use full 30-day TTL only)
+SESSION_REFRESH_INTERVAL_SEC=3600
+# Auto-retry with fresh session when challenge page is detected
+AUTO_REFRESH_ON_CHALLENGE=true
+# Max retries with fresh session when stuck on challenge page
+MAX_CHALLENGE_RETRIES=2
+# Random wait range (seconds) when challenge page is detected before clicking verify
+CHALLENGE_WAIT_MIN_SEC=5.0
+CHALLENGE_WAIT_MAX_SEC=10.0
+
+# Stealth: random delay before first navigation (seconds)
+STEALTH_MIN_DELAY=0.5
+STEALTH_MAX_DELAY=2.0
+
+# Proxy: time-based ban in seconds after a failure (0 = only use PROXY_MAX_FAILURES count)
+PROXY_BAN_TIME_SEC=300
