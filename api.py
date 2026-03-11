@@ -1594,12 +1594,13 @@ async def extract_collection_with_fields(scraper: WebScraper, selector: str, fie
                     result["{field_name}"] = (element.innerText || element.textContent || "").trim();
                 ''')
             elif field_selector == "a" and attr == "href":
-                # Special case for href attribute - get from the element itself
+                # In collect mode, element is the collection item (e.g. div); find child anchor and get its href
                 js_code_parts.append(f'''
-                    result["{field_name}"] = element.getAttribute("href") || "";
+                    const {field_name}_linkEl = element.querySelector("a");
+                    result["{field_name}"] = {field_name}_linkEl ? ({field_name}_linkEl.getAttribute("href") || "") : "";
                 ''')
             elif field_selector == "href":
-                # Special case for href attribute - get from the element itself
+                # Shorthand: get href from element itself (when collection item is an <a>)
                 js_code_parts.append(f'''
                     result["{field_name}"] = element.getAttribute("href") || "";
                 ''')
