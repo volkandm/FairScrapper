@@ -52,6 +52,13 @@ DEBUG_MAX_AGE_DAYS = 5
 SESSION_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 domain_sessions: Dict[str, Dict[str, Any]] = {}
 
+# Scrape queue: limit concurrent browser instances (configurable via MAX_CONCURRENT_SCRAPES)
+MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("MAX_CONCURRENT_SCRAPES", "3")))
+scrape_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
+_scrape_active_count = 0
+_scrape_pending_count = 0
+_queue_log_task: Optional[asyncio.Task] = None
+
 
 def _ensure_debug_dir() -> str:
     os.makedirs(DEBUG_DIR, exist_ok=True)
@@ -529,14 +536,38 @@ async def _save_debug_frame(scraper: WebScraper, filepath: str) -> Optional[str]
 # Lifespan event handler
 from contextlib import asynccontextmanager
 
+def _log_queue_status():
+    """Log current scrape queue status (active + waiting)."""
+    global _scrape_active_count, _scrape_pending_count
+    total = _scrape_active_count + _scrape_pending_count
+    if total > 0:
+        logger.info(f"📊 Queue: {_scrape_pending_count} waiting, {_scrape_active_count} active (max {MAX_CONCURRENT_SCRAPES})")
+
+
+async def _queue_status_logger():
+    """Background task: log queue status periodically when there is activity."""
+    while True:
+        await asyncio.sleep(30)
+        _log_queue_status()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
+    global _queue_log_task
     # Startup
     logger.info("🚀 Starting Web Scraper API...")
+    logger.info(f"📊 Max concurrent scrapes: {MAX_CONCURRENT_SCRAPES} (set MAX_CONCURRENT_SCRAPES to change)")
+    _queue_log_task = asyncio.create_task(_queue_status_logger())
     yield
     # Shutdown
     logger.info("🛑 Shutting down Web Scraper API...")
+    if _queue_log_task:
+        _queue_log_task.cancel()
+        try:
+            await _queue_log_task
+        except asyncio.CancelledError:
+            pass
     for scraper in scraper_pool:
         await scraper.close()
     scraper_pool.clear()
@@ -1791,17 +1822,32 @@ async def scrape_website(
     - SOCKS5: socks5://proxy.com:1080
     - With credentials: socks5://proxy.com:1080:username:password
     """
+    global _scrape_active_count, _scrape_pending_count
+    _scrape_pending_count += 1
+    _log_queue_status()
+    acquired = False
     try:
-        # Check if this is a simple HTML request (no get/collect fields)
-        if not request.get and not request.collect:
-            # Simple HTML source code request
-            logger.info("🎯 Simple HTML source request")
-            return await scrape_html_source(request, api_key, http_request)
-        else:
-            # Unified scraping request
-            logger.info("🎯 Using unified format")
-            return await scrape_unified(request, api_key, http_request)
+        async with scrape_semaphore:
+            acquired = True
+            _scrape_pending_count -= 1
+            _scrape_active_count += 1
+            logger.info(f"▶️ Request started, queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
+            try:
+                # Check if this is a simple HTML request (no get/collect fields)
+                if not request.get and not request.collect:
+                    # Simple HTML source code request
+                    logger.info("🎯 Simple HTML source request")
+                    return await scrape_html_source(request, api_key, http_request)
+                else:
+                    # Unified scraping request
+                    logger.info("🎯 Using unified format")
+                    return await scrape_unified(request, api_key, http_request)
+            finally:
+                _scrape_active_count -= 1
+                logger.info(f"✅ Request finished, queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
     except Exception as e:
+        if not acquired:
+            _scrape_pending_count -= 1
         logger.exception("❌ Scrape endpoint error")
         return JSONResponse(
             status_code=500,

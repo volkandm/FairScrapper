@@ -229,10 +229,15 @@ PROXY_TEST_INTERVAL=3600
 
 # Stealth (optional): reduce bot detection on challenge pages
 USE_STEALTH=false
+
+# Concurrency: max parallel scrape requests (default 3). Extra requests wait in queue.
+MAX_CONCURRENT_SCRAPES=3
 ```
 Set `USE_STEALTH=true` when scraping sites that show “Verify you are human” or similar challenges; then restart the API (`./restart.sh`).
 
 **Challenge & session (optional):** When a challenge page is detected, the scraper can wait, click verify, and retry with a fresh session. Env: `SESSION_REFRESH_INTERVAL_SEC`, `AUTO_REFRESH_ON_CHALLENGE`, `MAX_CHALLENGE_RETRIES`, `CHALLENGE_WAIT_MIN_SEC` / `CHALLENGE_WAIT_MAX_SEC`, `STEALTH_MIN_DELAY` / `STEALTH_MAX_DELAY`, `PROXY_BAN_TIME_SEC`. See `env_example.txt`.
+
+**Concurrency & queue:** The API queues incoming scrape requests and limits how many run in parallel (default: 3). Set `MAX_CONCURRENT_SCRAPES` in `.env` to control this. Extra requests wait in the queue until a slot is free. Logs show queue status (waiting count, active count) on each request and every 30 seconds when there is activity.
 
 ### Proxy Setup
 
