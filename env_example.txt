@@ -83,5 +83,9 @@ NAVIGATE_POST_SLEEP_SEC=0.5
 # Proxy: time-based ban in seconds after a failure (0 = only use PROXY_MAX_FAILURES count)
 PROXY_BAN_TIME_SEC=300
 
-# Concurrency: max parallel scrape requests (browsers). Extra requests wait in queue. Default 3.
-MAX_CONCURRENT_SCRAPES=3
+# Concurrency: max parallel scrape requests (browsers). Default 10.
+MAX_CONCURRENT_SCRAPES=10
+# Max queue size: reject with "Too busy, try again" when queue full. Default 100.
+MAX_QUEUE_SIZE=100
+# Load threshold: wait before starting new work when system load exceeds this. Default 15.
+LOAD_THRESHOLD=15

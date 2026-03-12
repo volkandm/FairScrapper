@@ -53,11 +53,22 @@ SESSION_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 domain_sessions: Dict[str, Dict[str, Any]] = {}
 
 # Scrape queue: limit concurrent browser instances (configurable via MAX_CONCURRENT_SCRAPES)
-MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("MAX_CONCURRENT_SCRAPES", "3")))
+MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("MAX_CONCURRENT_SCRAPES", "10")))
+MAX_QUEUE_SIZE = max(1, int(os.getenv("MAX_QUEUE_SIZE", "100")))
+LOAD_THRESHOLD = float(os.getenv("LOAD_THRESHOLD", "15"))
 scrape_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
 _scrape_active_count = 0
 _scrape_pending_count = 0
 _queue_log_task: Optional[asyncio.Task] = None
+
+
+def _get_system_load() -> float:
+    """Return 1-min load average. On Windows or error, returns 0 (no throttling)."""
+    try:
+        load_1min, _, _ = os.getloadavg()
+        return load_1min
+    except (OSError, AttributeError):
+        return 0.0
 
 
 def _ensure_debug_dir() -> str:
@@ -541,7 +552,8 @@ def _log_queue_status():
     global _scrape_active_count, _scrape_pending_count
     total = _scrape_active_count + _scrape_pending_count
     if total > 0:
-        logger.info(f"📊 Queue: {_scrape_pending_count} waiting, {_scrape_active_count} active (max {MAX_CONCURRENT_SCRAPES})")
+        load = _get_system_load()
+        logger.info(f"📊 Queue: {_scrape_pending_count} waiting, {_scrape_active_count} active (max {MAX_CONCURRENT_SCRAPES}), load {load:.1f}")
 
 
 async def _queue_status_logger():
@@ -557,7 +569,7 @@ async def lifespan(app: FastAPI):
     global _queue_log_task
     # Startup
     logger.info("🚀 Starting Web Scraper API...")
-    logger.info(f"📊 Max concurrent scrapes: {MAX_CONCURRENT_SCRAPES} (set MAX_CONCURRENT_SCRAPES to change)")
+    logger.info(f"📊 Queue: max_concurrent={MAX_CONCURRENT_SCRAPES}, max_queue={MAX_QUEUE_SIZE}, load_threshold={LOAD_THRESHOLD}")
     _queue_log_task = asyncio.create_task(_queue_status_logger())
     yield
     # Shutdown
@@ -1823,15 +1835,34 @@ async def scrape_website(
     - With credentials: socks5://proxy.com:1080:username:password
     """
     global _scrape_active_count, _scrape_pending_count
+
+    # Reject if queue is full
+    if _scrape_pending_count + _scrape_active_count >= MAX_QUEUE_SIZE:
+        logger.warning(f"⚠️ Queue full ({_scrape_pending_count} waiting, {_scrape_active_count} active), rejecting request")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "Too busy, try again",
+                "url": str(request.url),
+            },
+        )
+
     _scrape_pending_count += 1
     _log_queue_status()
+
+    # Wait for system load to drop below threshold before accepting new work
+    while _get_system_load() > LOAD_THRESHOLD:
+        logger.info(f"⏳ Load {_get_system_load():.1f} > {LOAD_THRESHOLD}, waiting... queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
+        await asyncio.sleep(2)
+
     acquired = False
     try:
         async with scrape_semaphore:
             acquired = True
             _scrape_pending_count -= 1
             _scrape_active_count += 1
-            logger.info(f"▶️ Request started, queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
+            logger.info(f"▶️ Request started (load {_get_system_load():.1f}), queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
             try:
                 # Check if this is a simple HTML request (no get/collect fields)
                 if not request.get and not request.collect:
