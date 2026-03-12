@@ -57,9 +57,13 @@ MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("MAX_CONCURRENT_SCRAPES", "10")))
 MAX_QUEUE_SIZE = max(1, int(os.getenv("MAX_QUEUE_SIZE", "100")))
 LOAD_THRESHOLD = float(os.getenv("LOAD_THRESHOLD", "10"))
 scrape_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
+# When load > threshold: only 1 new job can start at a time (no burst)
+_load_gate_semaphore = asyncio.Semaphore(1)
+_load_condition = asyncio.Condition()
 _scrape_active_count = 0
 _scrape_pending_count = 0
 _queue_log_task: Optional[asyncio.Task] = None
+_load_monitor_task: Optional[asyncio.Task] = None
 
 
 def _get_system_load() -> float:
@@ -563,17 +567,33 @@ async def _queue_status_logger():
         _log_queue_status()
 
 
+async def _load_monitor():
+    """Notify waiters when load drops below threshold (no fixed sleep in request path)."""
+    while True:
+        await asyncio.sleep(1)
+        if _get_system_load() <= LOAD_THRESHOLD:
+            async with _load_condition:
+                _load_condition.notify_all()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
-    global _queue_log_task
+    global _queue_log_task, _load_monitor_task
     # Startup
     logger.info("🚀 Starting Web Scraper API...")
     logger.info(f"📊 Queue: max_concurrent={MAX_CONCURRENT_SCRAPES}, max_queue={MAX_QUEUE_SIZE}, load_threshold={LOAD_THRESHOLD}")
     _queue_log_task = asyncio.create_task(_queue_status_logger())
+    _load_monitor_task = asyncio.create_task(_load_monitor())
     yield
     # Shutdown
     logger.info("🛑 Shutting down Web Scraper API...")
+    if _load_monitor_task:
+        _load_monitor_task.cancel()
+        try:
+            await _load_monitor_task
+        except asyncio.CancelledError:
+            pass
     if _queue_log_task:
         _queue_log_task.cancel()
         try:
@@ -1851,33 +1871,47 @@ async def scrape_website(
     _scrape_pending_count += 1
     _log_queue_status()
 
-    # Wait for system load to drop below threshold before acquiring slot (queued, no log spam)
-    while _get_system_load() > LOAD_THRESHOLD:
-        await asyncio.sleep(5)
-
+    # Queue: wait on condition when load > threshold (no fixed sleep). When load drops, only 1 passes (load gate).
     acquired = False
+    load_gate_held = False
+    scrape_held = False
     try:
-        async with scrape_semaphore:
-            acquired = True
-            _scrape_pending_count -= 1
-            _scrape_active_count += 1
+        while True:
+            async with _load_condition:
+                while _get_system_load() > LOAD_THRESHOLD:
+                    await _load_condition.wait()
+            await _load_gate_semaphore.acquire()
+            load_gate_held = True
+            if _get_system_load() <= LOAD_THRESHOLD:
+                break
+            _load_gate_semaphore.release()
+            load_gate_held = False
+
+        await scrape_semaphore.acquire()
+        scrape_held = True
+        acquired = True
+        _scrape_pending_count -= 1
+        _scrape_active_count += 1
+        try:
             logger.info(f"▶️ Request started (load {_get_system_load():.1f}), queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
-            try:
-                # Check if this is a simple HTML request (no get/collect fields)
-                if not request.get and not request.collect:
-                    # Simple HTML source code request
-                    logger.info("🎯 Simple HTML source request")
-                    return await scrape_html_source(request, api_key, http_request)
-                else:
-                    # Unified scraping request
-                    logger.info("🎯 Using unified format")
-                    return await scrape_unified(request, api_key, http_request)
-            finally:
-                _scrape_active_count -= 1
-                logger.info(f"✅ Request finished, queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
+            if not request.get and not request.collect:
+                logger.info("🎯 Simple HTML source request")
+                return await scrape_html_source(request, api_key, http_request)
+            else:
+                logger.info("🎯 Using unified format")
+                return await scrape_unified(request, api_key, http_request)
+        finally:
+            _scrape_active_count -= 1
+            scrape_semaphore.release()
+            _load_gate_semaphore.release()
+            logger.info(f"✅ Request finished, queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
     except Exception as e:
         if not acquired:
             _scrape_pending_count -= 1
+            if load_gate_held:
+                _load_gate_semaphore.release()
+            if scrape_held:
+                scrape_semaphore.release()
         logger.exception("❌ Scrape endpoint error")
         return JSONResponse(
             status_code=500,
