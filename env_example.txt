@@ -87,5 +87,5 @@ PROXY_BAN_TIME_SEC=300
 MAX_CONCURRENT_SCRAPES=10
 # Max queue size: reject with "Too busy, try again" when queue full. Default 100.
 MAX_QUEUE_SIZE=100
-# Load threshold: wait before starting new work when system load exceeds this. Default 15.
-LOAD_THRESHOLD=15
+# Load threshold: wait before starting new work when system load exceeds this. Default 10.
+LOAD_THRESHOLD=10

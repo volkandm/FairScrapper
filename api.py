@@ -55,7 +55,7 @@ domain_sessions: Dict[str, Dict[str, Any]] = {}
 # Scrape queue: limit concurrent browser instances (configurable via MAX_CONCURRENT_SCRAPES)
 MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("MAX_CONCURRENT_SCRAPES", "10")))
 MAX_QUEUE_SIZE = max(1, int(os.getenv("MAX_QUEUE_SIZE", "100")))
-LOAD_THRESHOLD = float(os.getenv("LOAD_THRESHOLD", "15"))
+LOAD_THRESHOLD = float(os.getenv("LOAD_THRESHOLD", "10"))
 scrape_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
 _scrape_active_count = 0
 _scrape_pending_count = 0
@@ -1851,10 +1851,9 @@ async def scrape_website(
     _scrape_pending_count += 1
     _log_queue_status()
 
-    # Wait for system load to drop below threshold before accepting new work
+    # Wait for system load to drop below threshold before acquiring slot (queued, no log spam)
     while _get_system_load() > LOAD_THRESHOLD:
-        logger.info(f"⏳ Load {_get_system_load():.1f} > {LOAD_THRESHOLD}, waiting... queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
 
     acquired = False
     try:
