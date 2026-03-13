@@ -1871,21 +1871,22 @@ async def scrape_website(
     _scrape_pending_count += 1
     _log_queue_status()
 
-    # Queue: wait on condition when load > threshold (no fixed sleep). When load drops, only 1 passes (load gate).
+    # Load <= threshold: acquire scrape_semaphore directly (up to max 10). Load > threshold: wait, then only 1 passes (load gate).
     acquired = False
     load_gate_held = False
     scrape_held = False
     try:
-        while True:
-            async with _load_condition:
-                while _get_system_load() > LOAD_THRESHOLD:
-                    await _load_condition.wait()
-            await _load_gate_semaphore.acquire()
-            load_gate_held = True
-            if _get_system_load() <= LOAD_THRESHOLD:
-                break
-            _load_gate_semaphore.release()
-            load_gate_held = False
+        if _get_system_load() > LOAD_THRESHOLD:
+            while True:
+                async with _load_condition:
+                    while _get_system_load() > LOAD_THRESHOLD:
+                        await _load_condition.wait()
+                await _load_gate_semaphore.acquire()
+                load_gate_held = True
+                if _get_system_load() <= LOAD_THRESHOLD:
+                    break
+                _load_gate_semaphore.release()
+                load_gate_held = False
 
         await scrape_semaphore.acquire()
         scrape_held = True
@@ -1903,7 +1904,8 @@ async def scrape_website(
         finally:
             _scrape_active_count -= 1
             scrape_semaphore.release()
-            _load_gate_semaphore.release()
+            if load_gate_held:
+                _load_gate_semaphore.release()
             logger.info(f"✅ Request finished, queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
     except Exception as e:
         if not acquired:
