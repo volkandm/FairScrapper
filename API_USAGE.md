@@ -996,6 +996,8 @@ fetch('http://localhost:8888/scrape', {
 | `debug` | boolean | false | Include debug HTML in response |
 | `take_screenshot` | boolean | false | Take screenshot |
 | `extract_links` | boolean | false | Extract all links from page |
+| `light_mode` | boolean | false | Fast, low-resource mode: smaller viewport (800×600), minimal waits, no mouse wander. Use for simple HTML extraction. |
+| `resolution` | string | null | Viewport size: `"1024x768"` or `"800x600"`. Overrides default 1920×1080. Can be used with or without `light_mode`. |
 | `click` | array | null | CSS selectors (strings) and/or waits (integers, milliseconds) to run in sequence before scraping. Use `"__verify_human__"` to click “Verify you are human” on challenge pages. |
 | `get` | object | null | Single element extractions |
 | `collect` | object | null | Collection extractions |

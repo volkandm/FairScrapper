@@ -242,9 +242,10 @@ class WebScraper:
             )
             
             # Create context with proxy and optional storage state
+            viewport = getattr(self, "_viewport_override", None) or {"width": 1920, "height": 1080}
             context_kwargs: Dict[str, Any] = {
                 "proxy": proxy_config,
-                "viewport": {"width": 1920, "height": 1080},
+                "viewport": viewport,
                 "user_agent": self.config.USER_AGENT,
             }
             if storage_state:
@@ -332,7 +333,8 @@ class WebScraper:
                     logger.info(f"⚠️ Continuing despite navigation timeout; current URL: {current_url}")
 
             # Wait a bit to allow JavaScript to run (configurable via NAVIGATE_POST_SLEEP_SEC)
-            await asyncio.sleep(getattr(self.config, "NAVIGATE_POST_SLEEP_SEC", 0.5))
+            post_sleep = 0.1 if getattr(self, "_light_mode", False) else getattr(self.config, "NAVIGATE_POST_SLEEP_SEC", 0.5)
+            await asyncio.sleep(post_sleep)
 
         except Exception as e:
             logger.error(f"Error navigating to {url}: {e}")

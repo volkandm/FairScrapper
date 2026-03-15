@@ -200,22 +200,24 @@ async def _test_proxy_connectivity(scraper: WebScraper) -> Dict[str, Any]:
     return result
 
 
-async def _wait_for_page_ready(scraper: WebScraper, label: str = "") -> None:
+async def _wait_for_page_ready(scraper: WebScraper, label: str = "", light_mode: bool = False) -> None:
     """
     Wait for page to be ready for scraping.
     - domcontentloaded (required)
     - networkidle (optional, disabled by default - many sites never reach it due to analytics/websockets)
     - document.readyState === 'complete'
     Use PAGE_READY_USE_NETWORKIDLE=true to enable networkidle (adds ~20s on dynamic sites).
+    light_mode: only domcontentloaded, shorter timeout, minimal extra delay.
     """
     if not scraper or not getattr(scraper, "page", None):
         return
 
     page = scraper.page
     ctx = f" ({label})" if label else ""
-    timeout_ms = int(os.getenv("PAGE_READY_TIMEOUT_MS", "8000"))
+    is_light = light_mode or getattr(scraper, "_light_mode", False)
+    timeout_ms = 4000 if is_light else int(os.getenv("PAGE_READY_TIMEOUT_MS", "8000"))
 
-    # domcontentloaded
+    # domcontentloaded (always)
     try:
         logger.info(f"⏳ Page ready wait{ctx}: domcontentloaded")
         await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
@@ -223,26 +225,27 @@ async def _wait_for_page_ready(scraper: WebScraper, label: str = "") -> None:
         msg = f"DOM content loaded wait failed{ctx}: {e}"
         logger.warning(f"⚠️ {msg}")
 
-    # networkidle - optional; many sites never reach it (analytics, websockets, ads)
-    use_networkidle = os.getenv("PAGE_READY_USE_NETWORKIDLE", "false").lower() == "true"
-    if use_networkidle:
+    if not is_light:
+        # networkidle - optional; many sites never reach it (analytics, websockets, ads)
+        use_networkidle = os.getenv("PAGE_READY_USE_NETWORKIDLE", "false").lower() == "true"
+        if use_networkidle:
+            try:
+                logger.info(f"⏳ Page ready wait{ctx}: networkidle")
+                await page.wait_for_load_state("networkidle", timeout=min(20000, timeout_ms * 2))
+            except Exception as e:
+                msg = f"Network idle wait failed{ctx}: {e}"
+                logger.warning(f"⚠️ {msg}")
+
+        # readyState === 'complete'
         try:
-            logger.info(f"⏳ Page ready wait{ctx}: networkidle")
-            await page.wait_for_load_state("networkidle", timeout=min(20000, timeout_ms * 2))
+            logger.info(f"⏳ Page ready wait{ctx}: document.readyState === 'complete'")
+            await page.wait_for_function("document.readyState === 'complete'", timeout=timeout_ms)
         except Exception as e:
-            msg = f"Network idle wait failed{ctx}: {e}"
+            msg = f"ReadyState('complete') wait failed{ctx}: {e}"
             logger.warning(f"⚠️ {msg}")
 
-    # readyState === 'complete'
-    try:
-        logger.info(f"⏳ Page ready wait{ctx}: document.readyState === 'complete'")
-        await page.wait_for_function("document.readyState === 'complete'", timeout=timeout_ms)
-    except Exception as e:
-        msg = f"ReadyState('complete') wait failed{ctx}: {e}"
-        logger.warning(f"⚠️ {msg}")
-
-    # Small extra delay for late JS
-    await asyncio.sleep(0.5)
+    # Small extra delay for late JS (minimal in light mode)
+    await asyncio.sleep(0.1 if is_light else 0.5)
     logger.info(f"✅ Page ready wait finished{ctx}")
 
 
@@ -625,6 +628,10 @@ class UnifiedScrapeRequest(BaseModel):
     debug: bool = False
     take_screenshot: bool = False
     extract_links: bool = False
+    # Light mode: faster, lower resource usage (smaller viewport, minimal waits, no mouse wander)
+    light_mode: bool = False
+    # Viewport resolution: "1024x768" or "800x600". Overrides default 1920x1080.
+    resolution: Optional[str] = None
     # CSS selectors (strings) and/or waits (integers, milliseconds) in sequence.
     # Use "__verify_human__" to click "Verify you are human" on challenge pages.
     click: Optional[List[Union[str, int]]] = None
@@ -653,6 +660,8 @@ class ScrapeRequest(BaseModel):
     extract_text: bool = True
     extract_links: bool = False
     extract_images: bool = False
+    light_mode: bool = False
+    resolution: Optional[str] = None
 
 class ScrapeResponse(BaseModel):
     success: bool
@@ -719,7 +728,23 @@ async def verify_api_key(x_api_key: str = Header(None)):
 scraper_pool = []
 
 
-async def get_scraper(domain: Optional[str] = None):
+def _parse_resolution(resolution: Optional[str]) -> Optional[Dict[str, int]]:
+    """Parse '1024x768' format to {width, height}. Returns None if invalid."""
+    if not resolution or not isinstance(resolution, str):
+        return None
+    try:
+        parts = resolution.strip().lower().split("x")
+        if len(parts) != 2:
+            return None
+        w, h = int(parts[0].strip()), int(parts[1].strip())
+        if w < 320 or h < 240:
+            return None
+        return {"width": w, "height": h}
+    except (ValueError, TypeError):
+        return None
+
+
+async def get_scraper(domain: Optional[str] = None, light_mode: bool = False, resolution: Optional[str] = None):
     """Get scraper instance with optional per-domain session and sticky proxy."""
     import random
 
@@ -727,6 +752,16 @@ async def get_scraper(domain: Optional[str] = None):
     try:
         # Create new scraper
         scraper = WebScraper()
+
+        # Viewport: resolution from request (e.g. "1024x768"), or 800x600 in light mode, else 1920x1080
+        parsed = _parse_resolution(resolution)
+        if parsed:
+            viewport = parsed
+        elif light_mode:
+            viewport = {"width": 800, "height": 600}
+        else:
+            viewport = {"width": 1920, "height": 1080}
+        scraper._viewport_override = viewport
 
         # Try to reuse existing domain session (storage_state + proxy index)
         session = _get_valid_domain_session(domain) if domain else None
@@ -1846,6 +1881,8 @@ async def scrape_website(
     - debug: Include debug HTML in response (default: False)
     - take_screenshot: Take screenshot (default: False)
     - extract_links: Extract all links from page (default: False)
+    - light_mode: Fast, low-resource mode (default: False)
+    - resolution: Viewport size, e.g. "1024x768" (optional)
     - get: Dictionary of single element extractions
     - collect: Dictionary of collection extractions
     
@@ -2385,16 +2422,18 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
 
         # Get scraper instance (per-domain session + sticky proxy when available)
         domain = _get_domain_from_url(str(request.url))
-        scraper = await get_scraper(domain=domain)
+        scraper = await get_scraper(domain=domain, light_mode=request.light_mode, resolution=request.resolution)
+        scraper._light_mode = request.light_mode
 
-        # Start random mouse wander (anti-detection)
-        try:
-            mouse_wander_stop_event = asyncio.Event()
-            mouse_wander_task = asyncio.create_task(
-                _random_mouse_wander(scraper, mouse_wander_stop_event)
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ Could not start mouse wander: {e}")
+        # Start random mouse wander (anti-detection) - skip in light mode to save resources
+        if not request.light_mode:
+            try:
+                mouse_wander_stop_event = asyncio.Event()
+                mouse_wander_task = asyncio.create_task(
+                    _random_mouse_wander(scraper, mouse_wander_stop_event)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Could not start mouse wander: {e}")
 
         # Start debug frame recorder (1 fps) if debug=true
         if request.debug:
@@ -2413,8 +2452,8 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
             else:
                 logger.info("🔒 Using proxy from configuration")
         
-        # Optional stealth delay before first navigation (inspired by cloudscraper)
-        nav_delay = _stealth_nav_delay_sec()
+        # Optional stealth delay before first navigation (inspired by cloudscraper) - skip in light mode
+        nav_delay = 0 if request.light_mode else _stealth_nav_delay_sec()
         if nav_delay > 0:
             logger.info(f"⏳ Stealth delay before navigate: {nav_delay:.1f}s")
             await asyncio.sleep(nav_delay)
@@ -2471,7 +2510,7 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
 
         # Wait for page to fully stabilize (even if wait_time not provided)
         try:
-            await _wait_for_page_ready(scraper, label="initial")
+            await _wait_for_page_ready(scraper, label="initial", light_mode=request.light_mode)
         except Exception as e:
             msg = f"Page ready wait failed (initial): {e}"
             logger.warning(f"⚠️ {msg}")
@@ -2500,7 +2539,8 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
                     domain_sessions.pop(domain, None)
                 await cleanup_scraper(scraper)
                 challenge_retries += 1
-                scraper = await get_scraper(domain=domain)
+                scraper = await get_scraper(domain=domain, light_mode=request.light_mode, resolution=request.resolution)
+                scraper._light_mode = request.light_mode
                 if mouse_wander_stop_event and mouse_wander_task:
                     try:
                         mouse_wander_stop_event.set()
@@ -2529,12 +2569,12 @@ async def scrape_html_source(request: UnifiedScrapeRequest, api_key: str, http_r
                         )
                     except Exception as e:
                         logger.warning(f"⚠️ Could not restart debug frame recorder: {e}")
-                nav_delay = _stealth_nav_delay_sec()
+                nav_delay = 0 if request.light_mode else _stealth_nav_delay_sec()
                 if nav_delay > 0:
                     await asyncio.sleep(nav_delay)
                 await scraper.navigate_to_url(url_str)
                 try:
-                    await _wait_for_page_ready(scraper, label="retry")
+                    await _wait_for_page_ready(scraper, label="retry", light_mode=request.light_mode)
                 except Exception as e:
                     logger.warning(f"⚠️ Page ready wait (retry): {e}")
                 if request.wait_time:
@@ -2753,16 +2793,18 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
 
         # Get scraper instance (per-domain session + sticky proxy when available)
         domain = _get_domain_from_url(str(request.url))
-        scraper = await get_scraper(domain=domain)
+        scraper = await get_scraper(domain=domain, light_mode=request.light_mode, resolution=request.resolution)
+        scraper._light_mode = request.light_mode
 
-        # Start random mouse wander (anti-detection)
-        try:
-            mouse_wander_stop_event = asyncio.Event()
-            mouse_wander_task = asyncio.create_task(
-                _random_mouse_wander(scraper, mouse_wander_stop_event)
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ Could not start mouse wander: {e}")
+        # Start random mouse wander (anti-detection) - skip in light mode to save resources
+        if not request.light_mode:
+            try:
+                mouse_wander_stop_event = asyncio.Event()
+                mouse_wander_task = asyncio.create_task(
+                    _random_mouse_wander(scraper, mouse_wander_stop_event)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Could not start mouse wander: {e}")
 
         # Start debug frame recorder (1 fps) if debug=true
         if request.debug:
@@ -2783,8 +2825,8 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
             else:
                 logger.info("🔒 Using proxy from configuration")
         
-        # Optional stealth delay before first navigation (inspired by cloudscraper)
-        nav_delay = _stealth_nav_delay_sec()
+        # Optional stealth delay before first navigation (inspired by cloudscraper) - skip in light mode
+        nav_delay = 0 if request.light_mode else _stealth_nav_delay_sec()
         if nav_delay > 0:
             logger.info(f"⏳ Stealth delay before navigate: {nav_delay:.1f}s")
             await asyncio.sleep(nav_delay)
@@ -2841,7 +2883,7 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
 
         # Wait for page to fully stabilize (even if wait_time not provided)
         try:
-            await _wait_for_page_ready(scraper, label="initial")
+            await _wait_for_page_ready(scraper, label="initial", light_mode=request.light_mode)
         except Exception as e:
             msg = f"Page ready wait failed (initial): {e}"
             logger.warning(f"⚠️ {msg}")
@@ -2870,7 +2912,8 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                     domain_sessions.pop(domain, None)
                 await cleanup_scraper(scraper)
                 challenge_retries += 1
-                scraper = await get_scraper(domain=domain)
+                scraper = await get_scraper(domain=domain, light_mode=request.light_mode, resolution=request.resolution)
+                scraper._light_mode = request.light_mode
                 if mouse_wander_stop_event and mouse_wander_task:
                     try:
                         mouse_wander_stop_event.set()
@@ -2899,12 +2942,12 @@ async def scrape_unified(request: UnifiedScrapeRequest, api_key: str, http_reque
                         )
                     except Exception as e:
                         logger.warning(f"⚠️ Could not restart debug frame recorder: {e}")
-                nav_delay = _stealth_nav_delay_sec()
+                nav_delay = 0 if request.light_mode else _stealth_nav_delay_sec()
                 if nav_delay > 0:
                     await asyncio.sleep(nav_delay)
                 await scraper.navigate_to_url(url_str)
                 try:
-                    await _wait_for_page_ready(scraper, label="retry")
+                    await _wait_for_page_ready(scraper, label="retry", light_mode=request.light_mode)
                 except Exception as e:
                     logger.warning(f"⚠️ Page ready wait (retry): {e}")
                 if request.wait_time:
@@ -3163,7 +3206,7 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
     try:
         # Get scraper instance (per-domain session + sticky proxy when available)
         domain = _get_domain_from_url(str(request.url))
-        scraper = await get_scraper(domain=domain)
+        scraper = await get_scraper(domain=domain, light_mode=request.light_mode, resolution=request.resolution)
         
         # Configure proxy
         if request.use_proxy:
@@ -3174,8 +3217,8 @@ async def scrape_legacy(request: ScrapeRequest, api_key: str):
             else:
                 logger.info("🔒 Using proxy from configuration")
         
-        # Optional stealth delay before first navigation (inspired by cloudscraper)
-        nav_delay = _stealth_nav_delay_sec()
+        # Optional stealth delay before first navigation (inspired by cloudscraper) - skip in light mode
+        nav_delay = 0 if request.light_mode else _stealth_nav_delay_sec()
         if nav_delay > 0:
             logger.info(f"⏳ Stealth delay before navigate: {nav_delay:.1f}s")
             await asyncio.sleep(nav_delay)
