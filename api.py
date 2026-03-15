@@ -56,6 +56,8 @@ domain_sessions: Dict[str, Dict[str, Any]] = {}
 MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("MAX_CONCURRENT_SCRAPES", "10")))
 MAX_QUEUE_SIZE = max(1, int(os.getenv("MAX_QUEUE_SIZE", "100")))
 LOAD_THRESHOLD = float(os.getenv("LOAD_THRESHOLD", "10"))
+# Overall per-request timeout: prevents stuck jobs from blocking the queue indefinitely
+SCRAPE_TIMEOUT_SEC = max(60, float(os.getenv("SCRAPE_TIMEOUT_SEC", "300")))
 scrape_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
 # When load > threshold: only 1 new job can start at a time (no burst)
 _load_gate_semaphore = asyncio.Semaphore(1)
@@ -582,7 +584,7 @@ async def lifespan(app: FastAPI):
     global _queue_log_task, _load_monitor_task
     # Startup
     logger.info("🚀 Starting Web Scraper API...")
-    logger.info(f"📊 Queue: max_concurrent={MAX_CONCURRENT_SCRAPES}, max_queue={MAX_QUEUE_SIZE}, load_threshold={LOAD_THRESHOLD}")
+    logger.info(f"📊 Queue: max_concurrent={MAX_CONCURRENT_SCRAPES}, max_queue={MAX_QUEUE_SIZE}, load_threshold={LOAD_THRESHOLD}, scrape_timeout={SCRAPE_TIMEOUT_SEC}s")
     _queue_log_task = asyncio.create_task(_queue_status_logger())
     _load_monitor_task = asyncio.create_task(_load_monitor())
     yield
@@ -1895,18 +1897,30 @@ async def scrape_website(
         _scrape_active_count += 1
         try:
             logger.info(f"▶️ Request started (load {_get_system_load():.1f}), queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
-            if not request.get and not request.collect:
-                logger.info("🎯 Simple HTML source request")
-                return await scrape_html_source(request, api_key, http_request)
-            else:
-                logger.info("🎯 Using unified format")
-                return await scrape_unified(request, api_key, http_request)
+            async def _run_scrape():
+                if not request.get and not request.collect:
+                    logger.info("🎯 Simple HTML source request")
+                    return await scrape_html_source(request, api_key, http_request)
+                else:
+                    logger.info("🎯 Using unified format")
+                    return await scrape_unified(request, api_key, http_request)
+            return await asyncio.wait_for(_run_scrape(), timeout=SCRAPE_TIMEOUT_SEC)
         finally:
             _scrape_active_count -= 1
             scrape_semaphore.release()
             if load_gate_held:
                 _load_gate_semaphore.release()
             logger.info(f"✅ Request finished, queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
+    except asyncio.TimeoutError:
+        logger.warning(f"⏱️ Scrape timeout after {SCRAPE_TIMEOUT_SEC}s - slot released, queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "success": False,
+                "error": f"Request timeout ({int(SCRAPE_TIMEOUT_SEC)}s)",
+                "url": str(request.url),
+            },
+        )
     except Exception as e:
         if not acquired:
             _scrape_pending_count -= 1
