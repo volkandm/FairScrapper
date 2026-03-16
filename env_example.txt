@@ -89,5 +89,7 @@ MAX_CONCURRENT_SCRAPES=10
 MAX_QUEUE_SIZE=100
 # Load threshold: wait before starting new work when system load exceeds this. Default 10.
 LOAD_THRESHOLD=10
-# Per-request timeout (seconds): prevents stuck jobs from blocking the queue. Default 300 (5 min).
-SCRAPE_TIMEOUT_SEC=300
+# Per-request timeout (seconds): prevents stuck jobs from blocking the queue. Default 180 (3 min).
+SCRAPE_TIMEOUT_SEC=180
+# Reject new requests when system load exceeds this (prevents deadlock under overload). Default 25.
+LOAD_REJECT_THRESHOLD=25

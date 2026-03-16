@@ -57,15 +57,19 @@ MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("MAX_CONCURRENT_SCRAPES", "10")))
 MAX_QUEUE_SIZE = max(1, int(os.getenv("MAX_QUEUE_SIZE", "100")))
 LOAD_THRESHOLD = float(os.getenv("LOAD_THRESHOLD", "10"))
 # Overall per-request timeout: prevents stuck jobs from blocking the queue indefinitely
-SCRAPE_TIMEOUT_SEC = max(60, float(os.getenv("SCRAPE_TIMEOUT_SEC", "300")))
+SCRAPE_TIMEOUT_SEC = max(60, float(os.getenv("SCRAPE_TIMEOUT_SEC", "180")))
 scrape_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
 # When load > threshold: only 1 new job can start at a time (no burst)
 _load_gate_semaphore = asyncio.Semaphore(1)
 _load_condition = asyncio.Condition()
 _scrape_active_count = 0
 _scrape_pending_count = 0
+_scrape_active_starts: List[float] = []  # Start times for stuck-job detection
 _queue_log_task: Optional[asyncio.Task] = None
 _load_monitor_task: Optional[asyncio.Task] = None
+
+# Reject new requests when load exceeds this (prevents complete deadlock under overload)
+LOAD_REJECT_THRESHOLD = float(os.getenv("LOAD_REJECT_THRESHOLD", "25"))
 
 
 def _get_system_load() -> float:
@@ -557,12 +561,21 @@ async def _save_debug_frame(scraper: WebScraper, filepath: str) -> Optional[str]
 from contextlib import asynccontextmanager
 
 def _log_queue_status():
-    """Log current scrape queue status (active + waiting)."""
-    global _scrape_active_count, _scrape_pending_count
+    """Log current scrape queue status (active + waiting). Detect stuck jobs."""
+    global _scrape_active_count, _scrape_pending_count, _scrape_active_starts
     total = _scrape_active_count + _scrape_pending_count
     if total > 0:
         load = _get_system_load()
         logger.info(f"📊 Queue: {_scrape_pending_count} waiting, {_scrape_active_count} active (max {MAX_CONCURRENT_SCRAPES}), load {load:.1f}")
+        # Stuck job detection: active jobs running longer than timeout
+        if _scrape_active_starts and len(_scrape_active_starts) > 0:
+            oldest = _scrape_active_starts[0]
+            age = time.time() - oldest
+            if age > SCRAPE_TIMEOUT_SEC:
+                logger.critical(
+                    f"🚨 STUCK JOBS: {_scrape_active_count} active for {age:.0f}s (timeout {SCRAPE_TIMEOUT_SEC}s). "
+                    "Restart the server to recover."
+                )
 
 
 async def _queue_status_logger():
@@ -587,7 +600,7 @@ async def lifespan(app: FastAPI):
     global _queue_log_task, _load_monitor_task
     # Startup
     logger.info("🚀 Starting Web Scraper API...")
-    logger.info(f"📊 Queue: max_concurrent={MAX_CONCURRENT_SCRAPES}, max_queue={MAX_QUEUE_SIZE}, load_threshold={LOAD_THRESHOLD}, scrape_timeout={SCRAPE_TIMEOUT_SEC}s")
+    logger.info(f"📊 Queue: max_concurrent={MAX_CONCURRENT_SCRAPES}, max_queue={MAX_QUEUE_SIZE}, load_threshold={LOAD_THRESHOLD}, load_reject={LOAD_REJECT_THRESHOLD}, scrape_timeout={SCRAPE_TIMEOUT_SEC}s")
     _queue_log_task = asyncio.create_task(_queue_status_logger())
     _load_monitor_task = asyncio.create_task(_load_monitor())
     yield
@@ -1893,7 +1906,20 @@ async def scrape_website(
     - SOCKS5: socks5://proxy.com:1080
     - With credentials: socks5://proxy.com:1080:username:password
     """
-    global _scrape_active_count, _scrape_pending_count
+    global _scrape_active_count, _scrape_pending_count, _scrape_active_starts
+
+    # Reject if system overloaded (high load can starve event loop, preventing timeouts)
+    load = _get_system_load()
+    if load > LOAD_REJECT_THRESHOLD:
+        logger.warning(f"⚠️ Load {load:.1f} > {LOAD_REJECT_THRESHOLD}, rejecting request (system overloaded)")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": f"System overloaded (load {load:.1f}). Try again later or restart the server.",
+                "url": str(request.url),
+            },
+        )
 
     # Reject if queue is full
     if _scrape_pending_count + _scrape_active_count >= MAX_QUEUE_SIZE:
@@ -1932,6 +1958,7 @@ async def scrape_website(
         acquired = True
         _scrape_pending_count -= 1
         _scrape_active_count += 1
+        _scrape_active_starts.append(time.time())
         try:
             logger.info(f"▶️ Request started (load {_get_system_load():.1f}), queue: {_scrape_pending_count} waiting, {_scrape_active_count} active")
             async def _run_scrape():
@@ -1944,6 +1971,8 @@ async def scrape_website(
             return await asyncio.wait_for(_run_scrape(), timeout=SCRAPE_TIMEOUT_SEC)
         finally:
             _scrape_active_count -= 1
+            if _scrape_active_starts:
+                _scrape_active_starts.pop(0)
             scrape_semaphore.release()
             if load_gate_held:
                 _load_gate_semaphore.release()
